@@ -234,7 +234,8 @@ class VillaNetContractTest {
         // live badge is "not their own words".
         val persons = personsOf(s, null, canWatch = false)
         assertEquals(PersonFacts(live = true, voice = VoiceState.Open, holdsStatus = true), persons["u-dave"])
-        assertEquals(PersonFacts(voice = VoiceState.Muted), persons["u-bob"])
+        // Bob is deafened in the voice roster: the index still says "muted", the roster says more.
+        assertEquals(PersonFacts(voice = VoiceState.Deafened), persons["u-bob"])
         assertEquals("everybody in the index, and nobody else", s.people.keys, persons.keys)
     }
 

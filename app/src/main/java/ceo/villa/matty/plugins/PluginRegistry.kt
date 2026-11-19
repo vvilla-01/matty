@@ -151,6 +151,15 @@ interface MattyPlugin {
     fun Overlay(host: PluginHost) {}
 
     /**
+     * Rows the module adds to a team's channel list, after its categories and before "Browse or
+     * create channels" (VillaNET: the voice channels and who is in them). Called in the list's
+     * composition, so the module collects what it needs here; the returned rows are added to the
+     * list as they are, their keys starting with the module's [id]. Null adds nothing.
+     */
+    @Composable
+    fun sidebarSection(host: PluginHost, teamId: String): (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null
+
+    /**
      * Whether the module has something going on you'd want to control from anywhere (VillaNET: a
      * stream playing with its panel closed). While it does, Matty floats [MiniBar] just above the
      * bottom pills of the home screen and of threads.
@@ -169,8 +178,8 @@ interface MattyPlugin {
     fun panelArgsForLink(path: String): Map<String, String>? = null
 }
 
-/** Someone in voice chat: talking freely, or with their mic muted. */
-enum class VoiceState { Open, Muted }
+/** Someone in voice chat: talking freely, with their mic muted, or deafened (hearing nothing, and muted too). */
+enum class VoiceState { Open, Muted, Deafened }
 
 /**
  * What someone is doing right now, shown Discord-style under their name: "Playing ELDEN RING", or
@@ -185,7 +194,7 @@ data class UserActivity(val kind: Kind, val title: String, val source: String) {
  * What plugins know about one person, for everywhere that person is shown.
  *
  * @property live On the air right now: a LIVE ring on their avatar everywhere.
- * @property voice In voice chat: a mic on their avatar. Null when they aren't.
+ * @property voice In voice chat: a mic on their avatar (crossed headphones when deafened). Null when they aren't.
  * @property activity What they're doing, Discord-style under their name ("Playing ELDEN RING").
  * @property holdsStatus The custom status beside their name is the plugin's doing rather than
  *   their own words (VillaNET borrows it for its live badge while they broadcast). Lines that say

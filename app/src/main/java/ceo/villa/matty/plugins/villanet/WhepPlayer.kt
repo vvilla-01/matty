@@ -46,16 +46,33 @@ val MEDIA_AUDIO: AudioAttributes = AudioAttributes.Builder()
     .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
     .build()
 
-/** Shared WebRTC plumbing (one factory and EGL context for the whole process). */
+/**
+ * Shared WebRTC plumbing: the library set up once per process, and the streams' factory and EGL
+ * context (one for the whole process). Voice channels have a factory of their own ([VoiceRtc]).
+ */
 object Rtc {
     @Volatile private var factory: PeerConnectionFactory? = null
+    @Volatile private var initialized = false
     val egl: EglBase by lazy { EglBase.create() }
 
-    fun factory(context: Context): PeerConnectionFactory = factory ?: synchronized(this) {
-        factory ?: run {
+    /**
+     * Sets the library up, once per process. Both factories call it: setting it up again would
+     * reset what it holds for the whole process under a factory already running.
+     */
+    fun ensureInitialized(context: Context) {
+        if (initialized) return
+        synchronized(this) {
+            if (initialized) return
             PeerConnectionFactory.initialize(
                 PeerConnectionFactory.InitializationOptions.builder(context.applicationContext).createInitializationOptions()
             )
+            initialized = true
+        }
+    }
+
+    fun factory(context: Context): PeerConnectionFactory = factory ?: synchronized(this) {
+        factory ?: run {
+            ensureInitialized(context)
             val adm = JavaAudioDeviceModule.builder(context.applicationContext)
                 .setUseStereoOutput(true)
                 // WebRTC plays as a voice call by default (USAGE_VOICE_COMMUNICATION), which
@@ -442,7 +459,7 @@ private suspend fun PeerConnection.received(): Received = suspendCancellableCoro
     }
 }
 
-private suspend fun PeerConnection.awaitOffer(c: MediaConstraints): SessionDescription = suspendCancellableCoroutine { cont ->
+internal suspend fun PeerConnection.awaitOffer(c: MediaConstraints): SessionDescription = suspendCancellableCoroutine { cont ->
     createOffer(object : SdpObserver {
         override fun onCreateSuccess(sdp: SessionDescription) { cont.resume(sdp) }
         override fun onSetSuccess() {}
@@ -451,7 +468,7 @@ private suspend fun PeerConnection.awaitOffer(c: MediaConstraints): SessionDescr
     }, c)
 }
 
-private suspend fun PeerConnection.awaitSetLocal(sdp: SessionDescription): Unit = suspendCancellableCoroutine { cont ->
+internal suspend fun PeerConnection.awaitSetLocal(sdp: SessionDescription): Unit = suspendCancellableCoroutine { cont ->
     setLocalDescription(object : SdpObserver {
         override fun onCreateSuccess(sdp: SessionDescription?) {}
         override fun onSetSuccess() { cont.resume(Unit) }
@@ -460,7 +477,7 @@ private suspend fun PeerConnection.awaitSetLocal(sdp: SessionDescription): Unit 
     }, sdp)
 }
 
-private suspend fun PeerConnection.awaitSetRemote(sdp: SessionDescription): Unit = suspendCancellableCoroutine { cont ->
+internal suspend fun PeerConnection.awaitSetRemote(sdp: SessionDescription): Unit = suspendCancellableCoroutine { cont ->
     setRemoteDescription(object : SdpObserver {
         override fun onCreateSuccess(sdp: SessionDescription?) {}
         override fun onSetSuccess() { cont.resume(Unit) }

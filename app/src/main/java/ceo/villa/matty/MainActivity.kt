@@ -37,8 +37,11 @@ class MainActivity : ComponentActivity() {
         // Recreated (after the process was killed): the screens aren't restored, so neither is
         // an orientation a full-screen stream asked for.
         if (savedInstanceState != null) requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        // Volume keys control media (streams and clips), never the call volume.
+        // Volume keys control media (streams and clips), and the call's volume only while in voice.
         volumeControlStream = AudioManager.STREAM_MUSIC
+        lifecycleScope.launch {
+            ceo.villa.matty.plugins.villanet.VoiceSession.volumeStream.collect { volumeControlStream = it }
+        }
         // A cold start is held to what the server on screen last required from the first frame,
         // before it has been asked again: out of captures, and behind its lock when it asks for one
         // (the lock is in memory only, so a new process starts locked).
@@ -89,6 +92,10 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_OPEN_CHANNEL = "ceo.villa.matty.OPEN_CHANNEL"
+        /** The voice call's notification: the voice screen of the server [EXTRA_SERVER_ID] names. */
+        const val ACTION_OPEN_VOICE = "ceo.villa.matty.OPEN_VOICE"
+        /** On [ACTION_OPEN_VOICE]: the notification's Unmute, which unmutes once Matty is on screen. */
+        const val EXTRA_UNMUTE = "ceo.villa.matty.UNMUTE"
         const val EXTRA_CHANNEL_ID = "channel_id"
         const val EXTRA_SERVER_ID = "server_id"
         /** [IntentKey]: an OPEN_CHANNEL without it is taken as the app simply being opened. */
@@ -99,6 +106,6 @@ class MainActivity : ComponentActivity() {
          * ([IntentKey]) names one; anything else starts with the active server (null).
          */
         fun startServer(action: String?, serverId: String?, given: String?, key: String): String? =
-            serverId?.takeIf { action == ACTION_OPEN_CHANNEL && !IntentKey.ignored(action, given, key) }
+            serverId?.takeIf { (action == ACTION_OPEN_CHANNEL || action == ACTION_OPEN_VOICE) && !IntentKey.ignored(action, given, key) }
     }
 }

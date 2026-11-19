@@ -60,10 +60,15 @@ interface MattyPlugin {
     fun checkOutgoing(text: String): String?                    // block a message, with a reason
     fun panelArgsForLink(path: String): Map<String, String>?   // handle {site}/plug/<id>/...
     @Composable fun Overlay(host: PluginHost)                   // float UI over the app (a popout)
+    @Composable fun sidebarSection(host: PluginHost, teamId: String): (LazyListScope.() -> Unit)?
+                                                               // rows after a team's channel categories,
+                                                               // keys starting with your id (Matty
+                                                               // Plugin: its voice channels)
     @Composable fun hasMiniBar(): Boolean                      // something to control from anywhere?
     @Composable fun MiniBar(host: PluginHost, modifier: Modifier) // that control: one 56dp pill, which
                                                                // Matty floats above the bottom pills
-                                                               // (Matty Plugin: the stream, panel closed)
+                                                               // (Matty Plugin: voice while in a call,
+                                                               // else the stream with its panel closed)
 }
 ```
 
@@ -76,7 +81,7 @@ entry). What comes back is read through `personOf(userId)`:
 ```kotlin
 data class PersonFacts(
     val live: Boolean,             // on the air: a LIVE ring on their avatar everywhere
-    val voice: VoiceState?,        // in voice: a mic in their presence badge (Open / Muted)
+    val voice: VoiceState?,        // in voice: a mic in their presence badge (Open / Muted / Deafened)
     val activity: UserActivity?,   // "Playing ELDEN RING" under their name in members and DMs
     val holdsStatus: Boolean,      // their custom status is your plugin's badge, not their words
 )
@@ -147,7 +152,8 @@ which the module shows wherever a person reads it (the Plugins screen, the panel
 and title, "Live on Acme TV — Watch", "Acme TV is locked." from a server that named it Acme TV),
 from `name` in `GET /api/v1/access`, and "Matty" until the server says. Words about the software
 itself (that it is too old, which release it is) say "Matty Plugin" whatever the server calls it.
-This version works with Matty Plugin 4.0.0 or newer (contract revision 4). It covers:
+This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice channels need
+4.3.0. It covers:
 
 - The client contract it shares with the plugin (the plugin's `contract/README.md`): the app is
   written for one revision of it, says so when the server's plugin is older ("Matty Plugin needs an
@@ -208,6 +214,45 @@ This version works with Matty Plugin 4.0.0 or newer (contract revision 4). It co
   app's side (`VideoTrack.setShouldReceive`, so nothing is decoded; `StreamWatch` decides when),
   never by offering the sound alone
 - In voice, Up next (join plans), boards, 24/7 channels, watcher faces
+- Voice channels, from plugin 4.3.0 (`VoiceSession`, one for the app; what it does is decided by
+  the pure `VoiceCore`): the roster is the snapshot's `voice` object (`channels` in tree order,
+  `people` with `session`, `channel`, `muted`, `deaf`, `phone`), turned into channels with their
+  people by `voiceRoomsOf`, with this phone's own seat placed at once from the join's answer.
+  Talking only while `voice.talk` in `/access` is `on`. A join is one WebRTC connection to the
+  plugin, audio only: the microphone's section (`sendonly`, Opus, with the
+  `ssrc-audio-level` header extension), four `recvonly` sections (one per voice the plugin passes
+  on at once) and the data channel `voice`, POSTed as `{channel, muted, deafened, sdp}` to
+  `/api/v1/voice/join`, whose answer is the server's SDP with its candidates and this phone's
+  `session`, `channel` and `name`. `POST /api/v1/voice/move`, `/voice/state` (one at a time, the
+  newest winning) and `/voice/leave`. The server speaks on the data channel: `talking` (who is
+  heard), `self` (this session's channel, and whether the voice server muted or suppressed it) and
+  `end` (the session is over, with its sentence). A connection that fails, is disconnected for 5 s,
+  or whose data channel closes without an `end` (or with `end: mumble`) joins again by itself after
+  1, 2, 5 and 10 s, then every 15 s, never sooner than a refusal's `retryAfterMs`, while there is a
+  network; `429`, `503` and other server errors (5xx), a `404` without the plugin's own
+  `not_found` (Mattermost's answer while the plugin is not running, as while it restarts), or no
+  answer at all, are waited out the same way, and every other refusal stops with the server's
+  sentence. A second WebRTC factory for voice (`VoiceRtc`: voice attributes, mono,
+  WebRTC's own echo canceller, noise suppressor and gain control) is made when a call starts and
+  released when it ends; the streams' factory is not touched. Mute stops the recording
+  (`setAudioRecording(false)`, so the microphone is really let go), deafen silences the output
+  (`setSpeakerMute`). The call holds audio focus (a playing stream stops, as for any other audio;
+  a phone call deafens and mutes until it ends), call mode, and the output through
+  `setCommunicationDevice` (`VoiceAudio`), and `VoiceService` keeps it going minimised (type
+  `microphone|mediaPlayback` when the microphone is allowed as it starts, `mediaPlayback`
+  otherwise). Leaving the server leaves voice first
+- Voice channels on screen, Discord's mobile voice in Matty's own pieces: a "Voice Channels"
+  category after a team's channel categories (`sidebarSection`), each channel in tree order with
+  the people in it (their account's picture and name when they have one here; muted, deafened and
+  phone marks; a green ring while they speak, known in this phone's own channel); a tap opens the
+  channel's sheet (who is there, the microphone to join with, and Join Voice, or Move Here from
+  another channel), composed from `Overlay` beside the microphone's permission request, and the
+  "In voice" row of the panel opens the same sheet. The voice screen is a page of the panel's
+  route (`Route.Plugin(id, mapOf("voice" to "1"))`, which the notification opens too): tiles,
+  and one pill with Mute, Deafen, the output (a small picker) and Leave. While in voice the bar
+  shows the call in place of the stream. All of it only while the snapshot names voice
+  channels; the join controls only while talking is on and the reader may watch (linked or let
+  in), with "Unlock <name> to join voice." in their place otherwise
 - Clips: grid, playback in ExoPlayer (skipping `leadMs`), a big thumbs-up button under the
   video, sharing to a channel
 - `custom_villanet_clip` / `custom_villanet_plan` cards, batched `/clips/cards` lookups; a clip

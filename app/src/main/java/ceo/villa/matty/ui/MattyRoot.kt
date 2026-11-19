@@ -212,7 +212,7 @@ private fun Session(activity: MainActivity, repo: ChatRepository, nav: Navigator
         // where a pending share goes): from any other app it is as if Matty were just opened.
         if (IntentKey.ignored(intent.action, intent.getStringExtra(MainActivity.EXTRA_KEY), container.intentKey)) return@LaunchedEffect
         val serverId = intent.getStringExtra(MainActivity.EXTRA_SERVER_ID)
-        if (intent.action == MainActivity.ACTION_OPEN_CHANNEL && serverId != null && serverId != repo.server.id) {
+        if ((intent.action == MainActivity.ACTION_OPEN_CHANNEL || intent.action == MainActivity.ACTION_OPEN_VOICE) && serverId != null && serverId != repo.server.id) {
             // A notification from another signed-in server: switch, then let that session open it.
             if (container.sessionStore.servers.value.any { it.id == serverId }) {
                 activity.pendingIntent.value = intent
@@ -220,7 +220,7 @@ private fun Session(activity: MainActivity, repo: ChatRepository, nav: Navigator
             }
             return@LaunchedEffect
         }
-        handleIntent(intent, nav, repo, ctx.packageName)
+        handleIntent(intent, nav, repo, ctx.packageName, container)
     }
 
     CompositionLocalProvider(LocalRepo provides repo, LocalActions provides nav) {
@@ -352,7 +352,7 @@ private fun RouteScreen(nav: Navigator, route: Route, onAddServer: () -> Unit) {
     }
 }
 
-private fun handleIntent(intent: Intent, nav: Navigator, repo: ChatRepository, ownPackage: String) {
+private fun handleIntent(intent: Intent, nav: Navigator, repo: ChatRepository, ownPackage: String, container: ceo.villa.matty.AppContainer) {
     val c = nav.repo
     when (intent.action) {
         MainActivity.ACTION_OPEN_CHANNEL -> {
@@ -362,6 +362,16 @@ private fun handleIntent(intent: Intent, nav: Navigator, repo: ChatRepository, o
             nav.openChannel(channelId)
             // A collapsed thread's notification opens the thread, over its channel.
             intent.getStringExtra(ceo.villa.matty.service.Notifier.EXTRA_ROOT_ID)?.ifEmpty { null }?.let { nav.openThread(it) }
+        }
+        // The voice call's notification: the voice screen, a page of the Matty plugin's panel.
+        MainActivity.ACTION_OPEN_VOICE -> {
+            val serverId = intent.getStringExtra(MainActivity.EXTRA_SERVER_ID)
+            if (serverId != null && serverId != repo.server.id) return // handled after the switch
+            nav.openPanel(ceo.villa.matty.plugins.villanet.VILLANET_ID, mapOf("voice" to "1"))
+            // Its Unmute while the call's service had no microphone: unmuted now, with Matty on screen.
+            if (intent.getBooleanExtra(MainActivity.EXTRA_UNMUTE, false)) {
+                container.plugins.builtIn.firstNotNullOfOrNull { it as? ceo.villa.matty.plugins.villanet.VillaNetPlugin }?.voice?.unmuteOnScreen()
+            }
         }
         Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
             ShareInbox.text = intent.getStringExtra(Intent.EXTRA_TEXT)

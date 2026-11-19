@@ -61,6 +61,10 @@ data class MattyColors(
     val away: Color = Color(0xFFFFBC1F),
     val dnd: Color = Color(0xFFD24B4E),
     val offline: Color = Color(0xFF80808A),
+    /** Joining a voice channel: a green dark enough for [onStatus] words on it. */
+    val join: Color = Color(0xFF248046),
+    /** Words and icons drawn on [online], [dnd] or [join]. */
+    val onStatus: Color = Color.White,
 )
 
 private fun oled(accent: Color) = MattyColors(

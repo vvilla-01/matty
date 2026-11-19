@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <!-- The test voice (plugins/villanet/VoiceTestSignal): exported so that adb's shell can
+             reach it with a broadcast carrying the boolean extra "on" (the command is in TestVoice.kt). -->
+        <receiver
+            android:name="ceo.villa.matty.debug.TestVoice"
+            android:exported="true"
+            tools:ignore="ExportedReceiver" />
+    </application>
+</manifest>

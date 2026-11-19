@@ -19,8 +19,8 @@ android {
         applicationId = "ceo.villa.matty"
         minSdk = 37          // Android 17 only, like MarkOut
         targetSdk = 37
-        versionCode = 31
-        versionName = "0.1.30"
+        versionCode = 32
+        versionName = "0.1.31"
         // Phones are arm64; x86_64 keeps emulators working. libwebrtc is per-ABI, so
         // nothing else is packaged.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
@@ -99,7 +99,8 @@ dependencies {
     // Media goes through the same hardened OkHttp client as everything else.
     implementation("androidx.media3:media3-datasource-okhttp:1.11.1")
 
-    // WebRTC for VillaNET's WHEP stream playback (receive-only, no ICE servers). The webrtc-sdk
+    // WebRTC for the Matty plugin's WHEP stream playback (receive-only) and its voice channels
+    // (audio both ways, to the plugin), with no ICE servers. The webrtc-sdk
     // build of libwebrtc (M150): kept current, and it has VideoTrack.setShouldReceive, which
     // minimised playback needs to stop decoding the picture (Google's own builds lack it).
     implementation("io.github.webrtc-sdk:android:150.7871.04")

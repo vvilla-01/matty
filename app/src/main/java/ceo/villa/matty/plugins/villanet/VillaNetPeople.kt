@@ -13,9 +13,9 @@ import ceo.villa.matty.plugins.VoiceState
  * snapshot's people index, and what somebody is doing ("Playing ELDEN RING", "Streaming ELDEN
  * RING") from everyone's accounts ([VnAccounts]). VillaNET decides each once, on the server, where
  * everything they depend on is known, and every client (its web panel, this app) only draws the
- * answer, so the two can never disagree about who is live or what a stream is of. Nothing here
- * reads the cards or the voice roster, puts Steam's game beside a stream's tag, or compares the
- * names of games.
+ * answer, so the two can never disagree about who is live or what a stream is of. The one thing
+ * read from the voice roster is who is deafened (the index says muted for them). Nothing here
+ * reads the cards, puts Steam's game beside a stream's tag, or compares the names of games.
  *
  * What somebody is doing is only for a reader who may watch: the server sends it to nobody else
  * (part of it is Steam's), and for a locked reader it's left out whatever was fetched before the
@@ -26,12 +26,17 @@ internal fun personsOf(snapshot: VnSnapshot?, accounts: VnAccounts?, canWatch: B
     val index = snapshot?.people.orEmpty()
     val doing = if (canWatch) accounts?.people.orEmpty() else emptyMap()
     if (index.isEmpty() && doing.isEmpty()) return emptyMap()
+    // Deafened is only in the voice roster (from 4.3.0): the index says muted for them.
+    val deaf = snapshot?.voice?.takeIf { it.connected }?.people.orEmpty().filter { it.deaf && it.userId.isNotEmpty() }.mapTo(HashSet()) { it.userId }
 
     val out = HashMap<String, PersonFacts>(index.size + doing.size)
     for ((id, p) in index) {
         val facts = PersonFacts(
             live = p.live.isNotEmpty(),
-            voice = when (p.voice) { VOICE_OPEN -> VoiceState.Open; VOICE_MUTED -> VoiceState.Muted; else -> null },
+            voice = when (p.voice) {
+                VOICE_OPEN, VOICE_MUTED -> if (id in deaf) VoiceState.Deafened else if (p.voice == VOICE_OPEN) VoiceState.Open else VoiceState.Muted
+                else -> null
+            },
             activity = doing[id]?.activity?.let { activityOf(it, name) },
             holdsStatus = p.badge == BADGE_LIVE,
         )

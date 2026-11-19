@@ -21,9 +21,9 @@ internal object IntentKey {
 
     /**
      * Whether an intent with [action] that carries [given] is ignored (taken as the app simply
-     * being opened): opening a channel needs the key; anything else (a share, the launcher)
-     * is open to every app as it always was.
+     * being opened): opening a channel or the voice screen needs the key; anything else (a
+     * share, the launcher) is open to every app as it always was.
      */
     fun ignored(action: String?, given: String?, key: String): Boolean =
-        action == MainActivity.ACTION_OPEN_CHANNEL && !matches(given, key)
+        (action == MainActivity.ACTION_OPEN_CHANNEL || action == MainActivity.ACTION_OPEN_VOICE) && !matches(given, key)
 }

@@ -64,6 +64,8 @@ data class VnAccess(
     val app: VnAppWord? = null,
     /** Whether this server takes push registrations (from 4.1.0), with the key to register with; null when it didn't say. */
     val push: VnPushWord? = null,
+    /** Whether people may talk in voice channels from here (from 4.3.0); null when it didn't say or voice is off. */
+    val voice: VnVoiceWord? = null,
 ) {
     val canWatch get() = access == "linked" || access == "letIn"
     val linked get() = access == "linked"
@@ -129,6 +131,25 @@ data class VnAppWord(
 data class VnPushWord(val state: String = "", val key: String = "", val reason: String = "") {
     val on: Boolean get() = state == "on"
 }
+
+/**
+ * `voice` in `GET /access` (from 4.3.0, while the server has voice on): [talk] is "on" while a
+ * phone may join a voice channel and talk, "off" otherwise, with [reason], the server's sentence,
+ * when it has one to give.
+ */
+@Serializable
+data class VnVoiceWord(val talk: String = "", val reason: String = "") {
+    val on: Boolean get() = talk == "on"
+}
+
+/** The first plugin version with voice channels: before it, `voice` in `/access` and the `/voice` routes don't exist. */
+const val VOICE_SINCE = "4.3.0"
+
+/** Whether the plugin at [version] has voice channels at all (whether a phone may talk is `voice.talk`). */
+fun voiceOffered(version: String?): Boolean = !version.isNullOrBlank() && !olderThan(version, VOICE_SINCE)
+
+/** Whether a phone may join and talk on the server [access] describes: 4.3.0 or newer, and `voice.talk` on. */
+fun voiceTalkOn(access: VnAccess?): Boolean = access != null && voiceOffered(access.version) && access.voice?.on == true
 
 /** The first plugin version that sends pushes: before it, `push` and the `/me/push` routes don't exist. */
 const val PUSH_SINCE = "4.1.0"
@@ -443,11 +464,87 @@ data class VnPlan(
     val full: Boolean = false,
 )
 
+/**
+ * The snapshot's voice roster: whether the plugin is connected to the voice server, its channels
+ * (from 4.3.0) in tree order (a parent before its children), and everybody in them.
+ */
 @Serializable
-data class VnVoice(val connected: Boolean = false, val people: List<VnVoicePerson> = emptyList())
+data class VnVoice(
+    val connected: Boolean = false,
+    val channels: List<VnVoiceChannel> = emptyList(),
+    val people: List<VnVoicePerson> = emptyList(),
+)
 
+/** One channel on the voice server: [id] 0 is the root, which alone has no [parent]; [max] 0 is no limit. */
 @Serializable
-data class VnVoicePerson(val name: String = "", val userId: String = "", val muted: Boolean = false)
+data class VnVoiceChannel(
+    val id: Int = 0,
+    val name: String = "",
+    val parent: Int? = null,
+    val depth: Int = 0,
+    val max: Int = 0,
+)
+
+/**
+ * Somebody on the voice server. [session] is the voice server's number for this connection,
+ * [channel] the channel's id; [muted] covers muted, self muted, deafened and suppressed, [deaf]
+ * deafened or self deafened; [phone] when they are there through Matty, whose [userId] is then
+ * the Mattermost account that joined.
+ */
+@Serializable
+data class VnVoicePerson(
+    val name: String = "",
+    val userId: String = "",
+    val muted: Boolean = false,
+    val session: Long = 0,
+    val channel: Int = 0,
+    val deaf: Boolean = false,
+    val phone: Boolean = false,
+)
+
+/** `POST /voice/join`'s answer: the server's SDP, and this phone's place on the voice server. */
+@Serializable
+data class VnVoiceJoined(val sdp: String = "", val session: Long = 0, val channel: Int = 0, val name: String = "") {
+    override fun toString() = "VnVoiceJoined(session=$session, channel=$channel)"
+}
+
+/** `POST /voice/move`'s answer. */
+@Serializable
+data class VnVoiceMoved(val channel: Int = 0)
+
+/** `POST /voice/state`'s answer. */
+@Serializable
+data class VnVoiceSelfState(val muted: Boolean = false, val deafened: Boolean = false)
+
+/**
+ * One message on the `voice` data channel, which only the server speaks on: who is being heard
+ * ([talking]), this session's place ([self]), or that the session is over ([end], with [reason]).
+ */
+@Serializable
+data class VnVoiceSignal(
+    val talking: List<Long>? = null,
+    val self: VnVoiceSelf? = null,
+    val end: String? = null,
+    val reason: String = "",
+)
+
+/** `self` on the data channel: this session's channel, whether the voice server muted it, and whether it may not speak there. */
+@Serializable
+data class VnVoiceSelf(val channel: Int = 0, val muted: Boolean = false, val suppressed: Boolean = false)
+
+/** `POST /voice/join`'s body. */
+internal fun voiceJoinBody(channel: Int, muted: Boolean, deafened: Boolean, sdp: String): JsonObject = buildJsonObject {
+    put("channel", channel)
+    put("muted", muted || deafened)
+    put("deafened", deafened)
+    put("sdp", sdp)
+}
+
+/** `POST /voice/state`'s body: deafened is always muted too. */
+internal fun voiceStateBody(muted: Boolean, deafened: Boolean): JsonObject = buildJsonObject {
+    put("muted", muted || deafened)
+    put("deafened", deafened)
+}
 
 @Serializable
 data class VnClipsInfo(
@@ -810,6 +907,27 @@ class VillaNetApi(
             body
         }
     }
+
+    // ---- voice channels (from 4.3.0) -----------------------------------------------------------
+
+    /**
+     * Joins voice channel [channel] with this phone's WebRTC offer, muted or deafened as asked; the
+     * answer is the server's SDP and this phone's session. A join by somebody who already has a
+     * voice session takes it over. Refused like any other call ([VillaNetException]).
+     */
+    suspend fun voiceJoin(channel: Int, muted: Boolean, deafened: Boolean, sdp: String): VnVoiceJoined =
+        post("/voice/join", voiceJoinBody(channel, muted, deafened, sdp), VnVoiceJoined.serializer()) ?: VnVoiceJoined()
+
+    /** Moves this phone's voice session to [channel]. */
+    suspend fun voiceMove(channel: Int): VnVoiceMoved =
+        post("/voice/move", buildJsonObject { put("channel", channel) }, VnVoiceMoved.serializer()) ?: VnVoiceMoved(channel)
+
+    /** Says whether this phone is muted or deafened (deafened is muted too). */
+    suspend fun voiceState(muted: Boolean, deafened: Boolean): VnVoiceSelfState =
+        post("/voice/state", voiceStateBody(muted, deafened), VnVoiceSelfState.serializer()) ?: VnVoiceSelfState(muted || deafened, deafened)
+
+    /** Leaves voice; fine when there was no session. */
+    suspend fun voiceLeave() { post<Unit>("/voice/leave", JsonObject(emptyMap()), null) }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
     fun stillUrl(s: VnStream) = "$api/stills?handle=${enc(s.handle)}&v=${enc(s.stillVersion)}"

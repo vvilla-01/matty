@@ -130,6 +130,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.TextButton
 import ceo.villa.matty.ui.components.MattyDialog
+import androidx.compose.material.icons.filled.HeadsetOff
 import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -837,7 +838,13 @@ private fun StreamFeed(
                 }
                 voice?.let { v ->
                     item(key = "hdr-voice", span = full) { SectionLabel("In voice · ${v.people.size}", Modifier.padding(top = 8.dp).animateItem()) }
-                    item(key = "voice", span = full) { VoiceRow(host, v.people, gutter, Modifier.bleed(gutter).padding(bottom = 20.dp).animateItem()) }
+                    item(key = "voice", span = full) {
+                        // With the voice server's channels (from 4.3.0), a person opens their channel's sheet.
+                        VoiceRow(
+                            host, v.people, gutter, Modifier.bleed(gutter).padding(bottom = 20.dp).animateItem(),
+                            onOpen = if (v.channels.isNotEmpty()) { p -> openVoiceChannel(plugin, host, p.channel) } else null,
+                        )
+                    }
                 }
                 if (upcoming.isNotEmpty()) {
                     item(key = "hdr-next", span = full) { SectionLabel("Up next", Modifier.padding(top = 8.dp).animateItem()) }
@@ -879,18 +886,20 @@ private fun NobodyLive(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun VoiceRow(host: PluginHost, people: List<VnVoicePerson>, gutter: Dp, modifier: Modifier = Modifier) {
+private fun VoiceRow(host: PluginHost, people: List<VnVoicePerson>, gutter: Dp, modifier: Modifier = Modifier, onOpen: ((VnVoicePerson) -> Unit)? = null) {
     val c = Matty.colors
     LazyRow(modifier, contentPadding = PaddingValues(horizontal = gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(people) { p ->
             Column(
-                Modifier.width(60.dp).semantics(mergeDescendants = true) { contentDescription = if (p.muted) "${p.name}, muted" else p.name },
+                Modifier.width(60.dp).clip(RoundedCornerShape(12.dp))
+                    .then(if (onOpen != null) Modifier.clickable(onClickLabel = "Voice channel") { onOpen(p) } else Modifier)
+                    .semantics(mergeDescendants = true) { contentDescription = if (p.deaf) "${p.name}, deafened" else if (p.muted) "${p.name}, muted" else p.name },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Box {
                     Avatar(if (p.userId.isNotEmpty()) host.repo.avatarUrl(p.userId) else null, p.name, 44.dp)
                     // Only the exception gets a mark: being in voice is the point of the row.
-                    if (p.muted) Icon(Icons.Outlined.MicOff, null, tint = Color.White,
+                    if (p.muted || p.deaf) Icon(if (p.deaf) Icons.Filled.HeadsetOff else Icons.Outlined.MicOff, null, tint = Color.White,
                         modifier = Modifier.align(Alignment.BottomEnd).size(16.dp).background(c.dnd, CircleShape).padding(3.dp))
                 }
                 Spacer(Modifier.height(4.dp))

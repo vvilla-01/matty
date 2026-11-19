@@ -4,11 +4,11 @@
 
 **Encrypted, end to end of the session.** Release builds talk to Mattermost over HTTPS and
 WSS only — sign-in, the session token, messages, files, images, video, and the WebRTC signalling
-of live streams (through Matty Plugin, on your server). There is no fallback to plain http: an
+of live streams and voice channels (through Matty Plugin, on your server). There is no fallback to plain http: an
 address typed as `http://` is refused, and a server that only answers on http can't be reached. This is enforced three times over: in the
 app's transport policy (`data/net/Transport.kt`), in the HTTP client (TLS 1.2+ only, no
 http↔https redirects, credentials refused on any unencrypted hop), and by the Android network
-security config. Live streams themselves are always DTLS-SRTP encrypted by WebRTC.
+security config. Live streams and voice channels themselves are always DTLS-SRTP encrypted by WebRTC.
 
 **Your session token goes to one place.** It's attached only to requests for the signed-in
 server's exact origin (scheme, host and port), so a look-alike host such as
@@ -131,6 +131,20 @@ drawn again from their pixels as a JPEG (a PNG when they have see-through parts)
 blanked, in a recording made in fragments too. A picture or video that can't be cleaned, or that
 the phone hasn't the free space to clean, isn't attached, and Matty says so. Other video
 formats (WebM, MKV, AVI) and documents (a PDF, say) go as they are, with whatever they contain.
+
+**The microphone (voice channels).** Matty asks for the microphone the first time you join a
+voice channel unmuted or unmute in one, and never otherwise; refused, you stay in the channel
+listening, shown as muted. It records only while you are in a voice channel and not muted or
+deafened (nor held by a phone call, nor muted by the voice server): muting lets go of it, and
+Android's microphone indicator goes out. While it records, what it hears goes, encrypted (DTLS-SRTP),
+to Matty Plugin on your server, and only there; the plugin passes it on, as it is, over TLS to the
+voice (Mumble) server your server's admins set up, which plays it to the people in your channel.
+The plugin never decodes it and keeps none of it; what the voice server does is up to its admins.
+The voice server knows you as `<your username> (Matty)`, or `<your username>.matty` on a voice
+server that refuses that name, in the channel you are in, and sees your server's address, never
+your phone's. Muting, deafening and moving are told to your server. While
+you are in voice a notification says so, with Mute and Leave, and swiping Matty away from the recent
+apps leaves the channel.
 
 **What a banner shows and what it sends.** You choose the part of a picture that shows as your
 profile banner (a Matty Plugin feature). A still picture is cut to that part on the phone, so the

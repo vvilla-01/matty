@@ -9,14 +9,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- A live stream keeps playing with Matty minimised (plugins/villanet/StreamService). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- A voice call keeps going with Matty minimised, its microphone included (plugins/villanet/VoiceService). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- VillaNET live streams play audio through WebRTC. -->
+    <!-- Live streams and voice channels play audio through WebRTC; a voice call sets the call mode and its output. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Talking in voice channels. Asked for the first time somebody joins unmuted or unmutes. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- The unlock a server can ask for: the system's fingerprint, face or screen-lock prompt (ui/lock). -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
-    <!-- libwebrtc's manifest asks for these; Matty only ever receives streams. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <!-- Matty never uses a camera: kept out whatever a library might ask for. -->
     <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
 
     <!-- UnifiedPush (push/): the installed distributors, and their link activity. -->
@@ -79,6 +82,12 @@
             android:name=".plugins.villanet.StreamService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- Started as microphone and media playback when the microphone is allowed, media playback otherwise. -->
+        <service
+            android:name=".plugins.villanet.VoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|mediaPlayback" />
 
         <receiver
             android:name=".service.NotificationActionReceiver"

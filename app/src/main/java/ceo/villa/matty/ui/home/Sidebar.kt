@@ -295,6 +295,9 @@ private fun TeamSidebar(nav: Navigator, teamId: String) {
     val team = teams.firstOrNull { it.id == teamId }
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     val categories = cats[teamId].orEmpty().filter { it.type != "direct_messages" }
+    // What the server's modules add after the categories (VillaNET: its voice channels), each asked under its own key.
+    val plugins by LocalContext.current.container.plugins.active.collectAsState()
+    val sections = plugins.mapNotNull { p -> androidx.compose.runtime.key(p.id) { p.sidebarSection(nav, teamId) } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp + ceo.villa.matty.ui.BottomChrome.barSpace)) {
         item {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 10.dp)) {
@@ -321,15 +324,7 @@ private fun TeamSidebar(nav: Navigator, teamId: String) {
             if (ids.isEmpty()) return@forEach
             val isCollapsed = collapsed[cat.id] ?: cat.collapsed
             item(key = "cat:${cat.id}") {
-                val rot by animateFloatAsState(if (isCollapsed) -90f else 0f, label = "chev")
-                Row(
-                    Modifier.fillMaxWidth().clickable { collapsed[cat.id] = !isCollapsed }.padding(start = 12.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Outlined.ExpandMore, null, tint = c.textTertiary, modifier = Modifier.size(16.dp).rotate(rot))
-                    Spacer(Modifier.width(4.dp))
-                    Text(cat.displayName.uppercase(), style = MaterialTheme.typography.labelMedium, color = c.textSecondary, fontWeight = FontWeight.SemiBold)
-                }
+                SidebarCategoryHeader(cat.displayName, isCollapsed) { collapsed[cat.id] = !isCollapsed }
             }
             val sorted = when (cat.sorting) {
                 "alpha" -> ids.sortedBy { channels[it]?.displayName?.lowercase() }
@@ -346,6 +341,7 @@ private fun TeamSidebar(nav: Navigator, teamId: String) {
                 }
             }
         }
+        for (section in sections) section(this)
         item {
             Row(Modifier.padding(horizontal = 8.dp, vertical = 14.dp)) {
                 SidebarRow(icon = { Icon(Icons.Outlined.Add, null, tint = c.textSecondary, modifier = Modifier.size(20.dp)) },
@@ -373,8 +369,25 @@ private fun ChannelRow(nav: Navigator, ch: Channel) {
     ) { nav.selectChannel(ch.id) }
 }
 
+/** A category's header in the channel list: its name in capitals and a chevron that folds it. */
 @Composable
-private fun SidebarRow(
+internal fun SidebarCategoryHeader(title: String, collapsed: Boolean, onToggle: () -> Unit) {
+    val c = Matty.colors
+    val rot by animateFloatAsState(if (collapsed) -90f else 0f, label = "chev")
+    Row(
+        Modifier.fillMaxWidth().clickable(onClickLabel = if (collapsed) "Expand" else "Collapse", onClick = onToggle)
+            .padding(start = 12.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.ExpandMore, null, tint = c.textTertiary, modifier = Modifier.size(16.dp).rotate(rot))
+        Spacer(Modifier.width(4.dp))
+        Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = c.textSecondary, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/** One row of the channel list: an icon, the name (and a line under it), and its marks at the end. */
+@Composable
+internal fun SidebarRow(
     icon: @Composable () -> Unit,
     name: String,
     unread: Boolean,
@@ -384,6 +397,8 @@ private fun SidebarRow(
     subtitle: String? = null,
     /** In place of [subtitle], for a line that's more than words (a DM's status line). */
     subtitleContent: (@Composable () -> Unit)? = null,
+    /** Drawn at the end, before the muted mark and the count (a voice channel's "2/4"). */
+    trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val c = Matty.colors
@@ -406,6 +421,7 @@ private fun SidebarRow(
             if (subtitleContent != null) subtitleContent()
             else if (subtitle != null) Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = c.textTertiary)
         }
+        trailing?.invoke()
         if (muted) Icon(Icons.Outlined.NotificationsOff, "Muted", tint = c.textTertiary, modifier = Modifier.size(16.dp))
         if (mentions > 0) { Spacer(Modifier.width(6.dp)); CountBadge(mentions) }
     }

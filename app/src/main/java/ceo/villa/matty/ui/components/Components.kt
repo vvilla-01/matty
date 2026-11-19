@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.HeadsetOff
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.foundation.layout.offset
@@ -95,8 +96,9 @@ fun statusColor(status: String?): Color = when (status) {
 /**
  * Round avatar with one Discord-style circle cut into the corner. The circle's colour is their
  * presence (green online, yellow away, red do not disturb, grey offline); while they're in voice
- * chat the same circle grows to hold a mic, crossed out when they're muted. One circle, so
- * nobody has to work out what a second one means.
+ * chat the same circle grows to hold a mic, crossed out when they're muted, or crossed
+ * headphones when they're deafened. One circle, so nobody has to work out what a second one
+ * means. While they speak in a voice channel, a green ring goes round the picture, as Discord's.
  */
 @Composable
 fun Avatar(
@@ -107,8 +109,13 @@ fun Avatar(
     status: String? = null,
     ringColor: Color = Matty.colors.background,
     live: Boolean = false,
-    /** In voice chat: the presence circle holds a mic (crossed out when muted). */
+    /** In voice chat: the presence circle holds a mic (crossed out when muted, crossed headphones when deafened). */
     voice: ceo.villa.matty.plugins.VoiceState? = null,
+    /**
+     * Speaking in a voice channel right now: a green ring round the picture, cut from it by
+     * [ringColor]. Null where nobody can be heard (most avatars), which keeps no animation.
+     */
+    speaking: Boolean? = null,
 ) {
     Box(modifier.size(size)) {
         val shape = CircleShape
@@ -120,8 +127,10 @@ fun Avatar(
         if (live) {
             Box(Modifier.matchParentSize().border(2.dp, Color(0xFFFF3B47), shape))
         }
+        if (speaking != null) SpeakingRing(speaking, size, ringColor)
         if (status != null || voice != null) {
             val inVoice = voice != null
+            val deafened = voice == ceo.villa.matty.plugins.VoiceState.Deafened
             val muted = voice == ceo.villa.matty.plugins.VoiceState.Muted
             // Big enough for the mic to read while they're in voice, and sat a little further out
             // on the edge so it covers no more of the picture than the plain dot does.
@@ -131,7 +140,7 @@ fun Avatar(
             val presence = status ?: "online"
             val label = listOfNotNull(
                 status?.let { statusLabel(it) },
-                if (inVoice) (if (muted) "in voice, muted" else "in voice") else null,
+                if (inVoice) (if (deafened) "in voice, deafened" else if (muted) "in voice, muted" else "in voice") else null,
             ).joinToString(", ").replaceFirstChar { it.uppercase() }
             Box(
                 // Heard with the picture wherever the avatar's row reads out.
@@ -146,7 +155,7 @@ fun Avatar(
                 when {
                     // Dark on the yellow of "away", where white would wash out.
                     inVoice -> Icon(
-                        if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, null,
+                        if (deafened) Icons.Filled.HeadsetOff else if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, null,
                         tint = if (presence == "away") Color(0xE6101014) else Color.White, modifier = Modifier.size(dot * 0.52f),
                     )
                     status == "dnd" -> Box(Modifier.width(dot * 0.4f).height(dot * 0.12f).background(ringColor, RoundedCornerShape(50)))
@@ -155,6 +164,22 @@ fun Avatar(
             }
         }
     }
+}
+
+/**
+ * [Avatar]'s speaking ring: over the picture's edge rather than round it, so the picture never
+ * moves as somebody starts and stops speaking; it fades rather than blinks between words.
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.SpeakingRing(speaking: Boolean, size: Dp, ringColor: Color) {
+    val ring by animateFloatAsState(if (speaking) 1f else 0f, androidx.compose.animation.core.tween(if (speaking) 80 else 240), label = "speaking")
+    if (ring <= 0f) return
+    val width = if (size >= 40.dp) 3.dp else 2.dp
+    Box(
+        Modifier.matchParentSize().alpha(ring)
+            .border(width, Matty.colors.online, CircleShape)
+            .padding(width).border(1.5.dp, ringColor, CircleShape),
+    )
 }
 
 @Composable

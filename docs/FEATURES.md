@@ -78,7 +78,7 @@ ready).
 - Member list grouped Online / Away / Do not disturb / Offline with custom statuses, there the
   moment the panel opens (it is read ahead and kept, and follows people joining and leaving)
 - One badge on a picture says both things: its colour is the person's presence, and a mic in it
-  means they're in voice (crossed out when muted)
+  means they're in voice (crossed out when muted; crossed headphones when deafened)
 - Profile sheets: everything at the top in one glance (handle, their local time and how far it
   is from yours, about, custom status), then Message / Mention; on your own, tap the camera to
   change your picture, or edit your profile
@@ -109,16 +109,22 @@ ready).
   the same record the web shows, with the plugin's own artwork), profile banners across the top
   of a profile, three wide by one high (you drag and pinch to choose the part that shows: a still
   picture is cut to it on the phone, and a GIF keeps playing with that part, kept by the
-  plugin), and the composer guard that stops
+  plugin), voice channels (from Matty Plugin 4.3.0, through the plugin to the server's Mumble
+  server, as Discord shows them: a Voice Channels category in each team's channel list with who
+  is in each channel and a green ring while they speak, a sheet to join a channel muted or not,
+  a voice screen with everybody as a tile and Mute, Deafen, the output and Leave, and a bar
+  while you browse elsewhere; join a channel and talk, muted or deafened, with the call going on with Matty minimised,
+  a notification with Mute and Leave, the call's output on the speaker, the phone, a headset or
+  Bluetooth, and Android's call audio with echo cancelling), and the composer guard that stops
   a bearer token being posted by mistake. Streams and clips play as media (speaker/headphones),
   pause for other audio, and go quiet if headphones are unplugged. A stream keeps playing with
   Matty minimised or the screen off, for its sound (the picture nobody can see is not decoded
   meanwhile, and picks up again a moment after Matty is back), with a media notification to mute
   or stop it (and lets go by itself when the stream ends, dies, or has sat muted and unseen for
   five minutes). The app and
-  Matty Plugin are written to one contract and released as a pair (Matty 0.1.30 works with
+  Matty Plugin are written to one contract and released as a pair (Matty 0.1.31 works with
   Matty Plugin 4.0.0 or newer, and says so when it meets an older one; push notifications need
-  4.1.0): who is live, in voice or
+  4.1.0, voice channels 4.3.0): who is live, in voice or
   wearing the plugin's badge is decided once, on the server, and the app asks only what changed.
   Links to clips and plans posted under the plugin's earlier id, `ceo.villa.villanet`, open as
   the new ones do

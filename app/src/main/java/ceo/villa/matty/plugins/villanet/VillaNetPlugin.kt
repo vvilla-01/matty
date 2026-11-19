@@ -44,7 +44,7 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     override val name = PRODUCT_NAME
     /** Links posted before 4.0.0 name the plugin's earlier id, and stand for the same clips and plans. */
     override val formerIds = setOf(PREDECESSOR_ID)
-    override val description = "Watch live streams, browse and vote on clips, see who is live and who is in voice, and join planned streams."
+    override val description = "Watch live streams, browse and vote on clips, see who is live, join voice channels and talk, and join planned streams."
     override val postTypes = setOf(POST_CLIP, POST_PLAN)
 
     var api: VillaNetApi? = null; private set
@@ -196,6 +196,22 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     /** One shared player so a stream keeps playing between the panel and the mini player. */
     var player: WhepPlayer? = null; private set
     val playingHandle = MutableStateFlow<String?>(null)
+
+    /**
+     * The app's one voice session (voice channels, from Matty Plugin 4.3.0): joined, left and
+     * followed by the screens; it leaves by itself when this server is left. See [VoiceSession].
+     */
+    val voice: VoiceSession by lazy { VoiceSession(c, this) }
+
+    /** The voice channel whose sheet is open (from the channel list or the panel), drawn by [Overlay]; null for none. */
+    val voiceSheet = MutableStateFlow<Int?>(null)
+    /**
+     * Whether the voice sheet joins muted: the person's last choice, held here rather than by the
+     * sheet, whose window Material builds afresh when the screen's density changes.
+     */
+    val voiceJoinMuted = MutableStateFlow(false)
+    /** The channel list's "Voice Channels" category, folded. */
+    val voiceFolded = MutableStateFlow(false)
 
     // Everything below is touched on the main thread only (the repository's scope, the UI).
 
@@ -389,6 +405,8 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     }
 
     override fun onDetach() {
+        // Voice first, while the plugin's client is still in hand to say so to the server.
+        voice.detached()
         poppedClip.value = null
         jobs.forEach { it.cancel() }
         jobs = emptyList()
@@ -731,9 +749,10 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
                 // The tag rides with the push, quoted as an entity tag is.
                 val tag = event.data.str("tag")?.takeIf { it.isNotEmpty() }?.let { "\"$it\"" }
                 val place = order.pushed()
-                // Minimised with nothing playing, nobody is looking and nothing depends on it:
-                // the newest push is kept as it came and decoded when Matty is next looked at.
-                if (repo?.appInForeground == false && playingHandle.value == null) heldPush = HeldPush(payload, tag, place)
+                // Minimised with nothing playing and nobody in voice, nobody is looking and nothing
+                // depends on it: the newest push is kept as it came and decoded when Matty is next
+                // looked at. (In voice, the call's notification names the channel from it.)
+                if (repo?.appInForeground == false && playingHandle.value == null && !voice.active) heldPush = HeldPush(payload, tag, place)
                 else decode(payload, tag, place)
             }
             // What the server holds about the reader may have changed: their access, or one of
@@ -769,6 +788,7 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         player?.pictureWanted = foreground
         if (foreground) {
             heldPush?.let { p -> heldPush = null; decode(p.payload, p.tag, p.place) }
+            voice.foreground()
             if (accountsStale) refreshAccounts()
             shelf?.lookedAt()
             // The boards changed while nobody was looking, and there is a copy to bring up to
@@ -957,6 +977,8 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     }
 
     fun play(handle: String) {
+        // Beside a call, heard on the speaker: the microphone is muted (the echo canceller can't hear the stream).
+        voice.streamStarting()
         player?.play(handle)
         playingHandle.value = handle
         // So it can carry on with Matty minimised. (It takes itself down when the stream stops.)
@@ -964,9 +986,11 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     }
 
     fun stop() {
+        val was = playingHandle.value != null
         player?.stop()
         playingHandle.value = null
         StreamService.stop()
+        if (was) voice.streamStopped()
     }
 
     /** Null on success, otherwise what to tell the user (offline, server refused…). */
@@ -1048,8 +1072,14 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
 
 
     override val panel = PluginPanel(PRODUCT_NAME, Icons.Outlined.LiveTv) { host, args, onClose ->
-        VillaNetPanel(this, host, args, onClose)
+        // The voice screen is a page of the panel's route: the notification, the bar and the sheet open it.
+        if (args[VOICE_ARG] != null) VillaNetColors { VoiceScreen(this, host, onClose) }
+        else VillaNetPanel(this, host, args, onClose)
     }
+
+    @Composable
+    override fun sidebarSection(host: PluginHost, teamId: String): (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? =
+        voiceSidebarSection(this, host)
 
     @Composable
     override fun PostContent(post: Post, host: PluginHost) {
@@ -1107,9 +1137,13 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
                 ClipViewer(this, host, id, onUnlock = { poppedClip.value = null; host.openPanel(VILLANET_ID, mapOf("clip" to id)) }) { poppedClip.value = null }
             }
         }
+        // Voice channels: the microphone is asked for here, outside every sheet, and the voice
+        // sheet is drawn after it (see VoiceSheetHost).
+        VoiceMicAsk(voice)
+        if (theirs == null) VillaNetColors { VoiceSheetHost(this, host) }
         // Gone with the screen it was opened over (signing in to another server, the activity
         // closing): it mustn't pop back up, playing, when the app's UI comes back.
-        androidx.compose.runtime.DisposableEffect(Unit) { onDispose { poppedClip.value = null } }
+        androidx.compose.runtime.DisposableEffect(Unit) { onDispose { poppedClip.value = null; voiceSheet.value = null } }
     }
 
     @Composable
@@ -1117,21 +1151,28 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         val playing by playingHandle.collectAsState()
         val panels by visible.collectAsState()
         val snap by snapshot.collectAsState()
-        // The panel has its own controls; Twitch never plays here.
-        return playing != null && panels == 0 && snap?.streams?.any { it.handle == playing && !it.isTwitch } == true
+        val inVoice by voice.state.collectAsState()
+        // Voice first, whatever is open (the bar never shows over the voice screen, a full-screen
+        // view); else the stream, whose panel has its own controls. Twitch never plays here.
+        return inVoice != VoiceStatus.Idle ||
+            (playing != null && panels == 0 && snap?.streams?.any { it.handle == playing && !it.isTwitch } == true)
     }
 
     @Composable
     override fun MiniBar(host: PluginHost, modifier: androidx.compose.ui.Modifier) {
         val playing by playingHandle.collectAsState()
         val snap by snapshot.collectAsState()
+        val inVoice by voice.state.collectAsState()
         val now = snap?.streams?.firstOrNull { it.handle == playing }
-        // Keeps drawing the last stream while the bar slides away.
+        // Keeps drawing the last stream, or the last voice bar, while the bar slides away.
         val last = androidx.compose.runtime.remember { arrayOfNulls<VnStream>(1) }
+        val wasVoice = androidx.compose.runtime.remember { booleanArrayOf(false) }
         if (now != null) last[0] = now
-        val s = now ?: last[0] ?: return
+        if (inVoice != VoiceStatus.Idle) wasVoice[0] = true else if (now != null) wasVoice[0] = false
+        val s = now ?: last[0]
         VillaNetColors {
-            MiniPlayerPill(this, host, s, openLabel = "Open ${displayName()}", onOpen = { host.openPanel(VILLANET_ID) }, modifier = modifier)
+            if (wasVoice[0] || s == null) VoiceBarPill(this, host, modifier)
+            else MiniPlayerPill(this, host, s, openLabel = "Open ${displayName()}", onOpen = { host.openPanel(VILLANET_ID) }, modifier = modifier)
         }
     }
 
