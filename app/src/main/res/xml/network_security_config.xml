@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release policy: TLS everywhere. No cleartext http/ws to any host, only the system's
+     trusted certificate authorities (a CA a user, MDM or malware installs can't intercept
+     Matty), and Certificate Transparency required so a mis-issued certificate is rejected.
+     Debug builds swap in src/debug/res/xml/network_security_config.xml, which adds only the
+     local dev server. The app enforces the same rule itself (data/net/Transport.kt). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <certificateTransparency enabled="true" />
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

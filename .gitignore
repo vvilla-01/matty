@@ -1,0 +1,21 @@
+# Gradle / Android Studio
+.gradle/
+.kotlin/
+build/
+/local.properties
+/captures
+.externalNativeBuild
+.cxx
+*.iml
+.idea/
+.DS_Store
+replay_pid*.log
+hs_err_pid*.log
+
+# Signing material never goes in the repo
+*.jks
+*.keystore
+*.p12
+*.lineage
+*.pass
+keystore.properties

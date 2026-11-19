@@ -1,0 +1,9 @@
+matty-release-manifest 1
+product ceo.villa.matty
+kind plugin
+version 4.0.0
+platform linux-amd64
+files 3
+c2d4b446a44ce54fab8e01150e24dd24f3d850c7c14dcfe31f6321341dd86874 7 assets/icon.svg
+5e689e2b01672bf33996e75d5e372ff60c536ce1599a1458e867cd8f4bef5160 43 plugin.json
+b3eacd33433b31b5252351032c9b3e7a2e7aa7738d5decdf0dd6c62680853c06 300000 server/dist/plugin-linux-amd64

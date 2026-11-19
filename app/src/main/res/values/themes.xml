@@ -1,0 +1,9 @@
+<resources>
+    <!-- Window chrome only; everything visible is Compose. Black canvas like MarkOut. -->
+    <style name="Theme.Matty" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

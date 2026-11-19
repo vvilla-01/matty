@@ -1,0 +1,9 @@
+A release manifest of the documented form ("matty-release-manifest 1"), signed with THROWAWAY
+keys made by tools/release/make-keys.sh for this test and deleted afterwards; only the public
+certificates are kept here. Signed with OpenSSL 3.6:
+
+  manifest.rsa.sig            pkeyutl -sign -digest sha512 -pkeyopt rsa_padding_mode:pss
+                              -pkeyopt rsa_pss_saltlen:64 -pkeyopt rsa_mgf1_md:sha512
+  manifest.mldsa87.sig        pkeyutl -sign (pure ML-DSA-87, the empty context)
+  manifest.mldsa87-context.sig  the same with -pkeyopt context-string:ceo.villa.matty/release-manifest/1,
+                              which a verifier using the empty context must refuse

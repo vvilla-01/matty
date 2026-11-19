@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A stand-in UnifiedPush distributor (the distributor's half of AND_3.1) for the dev rig. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- The apps it delivers to, and the service each offers to be raised to the foreground. -->
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.connector.RAISE_TO_FOREGROUND" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="${label}"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight"
+        tools:ignore="MissingApplicationIcon">
+
+        <!-- Opening it starts the polling service while it may still start one. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The link activity: answers with a PendingIntent of its own, which names this copy. -->
+        <activity
+            android:name=".LinkActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="unifiedpush" android:host="link" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".DistributorReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+                <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+                <action android:name="org.unifiedpush.android.distributor.MESSAGE_ACK" />
+                <action android:name="org.unifiedpush.android.distributor.feature.BYTES_MESSAGE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Steered by `adb shell am broadcast -n <package>/dev.standin.distributor.SteerReceiver`.
+             Only a sender holding DUMP (the shell, the system) reaches it. -->
+        <receiver
+            android:name=".SteerReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
+        <service
+            android:name=".PollService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Development stand-in for a UnifiedPush distributor: long-polls a push server on localhost and hands its messages to the apps registered with it" />
+        </service>
+    </application>
+</manifest>
