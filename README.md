@@ -55,6 +55,12 @@
 
 <br>
 
+<h3 align="center">Stay up to date with Obtainium</h3>
+
+<p align="center"><a href="https://github.com/ImranR98/Obtainium">Obtainium</a> installs Matty straight from this repository and tells you when a new version is out.<br>Add an app there and paste <code>https://github.com/vvilla-01/matty</code>.</p>
+
+<br>
+
 <h3 align="center">Verify</h3>
 
 <p align="center">The only official downloads are the releases of this repository.<br>Share or paste this into <a href="https://github.com/soupslurpr/AppVerifier">AppVerifier</a> to check one:</p>
