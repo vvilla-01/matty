@@ -141,6 +141,13 @@ class NewRepliesTest {
     }
 
     @Test
+    fun systemRepliesNeverCount() {
+        val seen = seenWith(thread, null, bob2.id)
+        val notice = Post(id = "p-notice", createAt = 5_000, userId = "u-erin", type = "system_ephemeral")
+        assertEquals("Carol's, not the notice", 1, newRepliesBelow(listOf(notice) + thread, seen, me))
+    }
+
+    @Test
     fun editsDoNotCount() {
         val seen = seenWith(thread, null, bob2.id)
         val edited = thread.map {

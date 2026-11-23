@@ -67,7 +67,10 @@ ready).
   it rises into view with the chat as the tab pill sinks away (and back). The header pills do the
   same at the top: both slide away when you swipe to the channel list or the member list. Scrolling
   up through older messages slides the message box away too (never while you're typing), and
-  scrolling back down, or reaching the newest message, brings it back
+  scrolling back down, or reaching the newest message, brings it back. Scrolled away from the
+  newest message, a pill above the message box counts the messages by others that arrived below
+  what you have seen ("3 new messages"), counts down as they come into view, and glides to the
+  newest message when tapped; with nothing new it says "Jump to present" once you are well up
 - Pills, the tab bar and full-screen views are solid to the touch: a tap that misses a button
   never lands on a message, name or row hidden behind them
 - The emoji button merges into the send button while you type and floats the server's custom

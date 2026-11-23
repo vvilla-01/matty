@@ -160,7 +160,11 @@ fun ChatScreen(
     // quote is on its way into it; and it's back whenever the chat comes into view again.
     ScrollAwayEffects(scrollAway, listState, keep = !inView || editing != null || typingHere("${ch.id}|") ||
         ceo.villa.matty.ui.ShareInbox.target == ch.id)
-    FollowNewest(listState, ch.id, rows.firstOrNull()?.post, repo.myId)
+    // The messages by others that arrived below what you have had on screen, for the pill.
+    val newMessages = rememberNewReplies(ch.id, listState, rows, repo.myId, ::newMessagesWords, byPlace = true)
+    FollowNewest(listState, ch.id, rows.firstOrNull()?.post, repo.myId) { newest, followed ->
+        newMessages.decided(newest, followed, listState.firstVisibleKey() as? String)
+    }
     val headerPad = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() } + 68.dp
     // The message pill floats over the conversation; the list keeps clear of it at rest and
     // scrolls on behind it.
@@ -202,7 +206,7 @@ fun ChatScreen(
             if (scrollAway.hidden) (dock - navBottom).coerceAtLeast(0.dp) else 0.dp,
             androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow), label = "jumpDrop",
         )
-        JumpToPresent(listState, inView, dock, Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = dock + 8.dp + bar)
+        JumpToPresent(listState, newMessages, inView, dock, Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = dock + 8.dp + bar)
             .offset { androidx.compose.ui.unit.IntOffset(0, drop.roundToPx()) })
         HeaderDock(inView) { ChatHeader(nav, ch.id, showMenu, onMenu, onMembers) }
     }
@@ -413,29 +417,55 @@ private fun HeaderDock(inView: Boolean, content: @Composable () -> Unit) {
 internal val DockClearance = 8.dp
 
 /**
- * The way back to the newest message. It sinks and fades with the message pill when the channel
- * list or the member list slides in (the same spring, as far as the pill goes: [dock]), and can't
- * be pressed while it's away.
+ * The way back to the newest message. While messages by others are below what the reader has seen
+ * ([newMessages]) it says how many, however near the newest message the list is, and for a screen
+ * reader it is a button and a polite live region, so the number is spoken when it shows and when it
+ * changes. With nothing new it says "Jump to present", shown only while the list is more than 8
+ * messages up. It sinks and fades with the message pill when the channel list or the member list
+ * slides in (the same spring, as far as the pill goes: [dock]), and can't be pressed while it's away.
  */
 @Composable
-private fun JumpToPresent(state: LazyListState, inView: Boolean, dock: androidx.compose.ui.unit.Dp, modifier: Modifier) {
+private fun JumpToPresent(state: LazyListState, newMessages: NewReplies, inView: Boolean, dock: androidx.compose.ui.unit.Dp, modifier: Modifier) {
     val scope = rememberCoroutineScope()
-    val show by remember(state) { derivedStateOf { state.firstVisibleItemIndex > 8 } }
+    val farUp by remember(state) { derivedStateOf { state.firstVisibleItemIndex > 8 } }
+    val show = newMessages.count > 0 || farUp
+    // What the pill says while it shows, and what it last said: it fades out with the words it had,
+    // also when another conversation takes this one's place under it.
+    var said by remember { mutableStateOf(PillWords("Jump to present", counting = false)) }
+    val says = channelPillWords(show, newMessages.count, newMessages.words, said)
+    androidx.compose.runtime.SideEffect { if (show) said = says }
     val rise = remember { androidx.compose.animation.core.Animatable(if (inView) 1f else 0f) }
     LaunchedEffect(inView) {
         rise.animateTo(if (inView) 1f else 0f, androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow))
     }
     val density = LocalDensity.current
     NewestPill(
-        show, "Jump to present",
+        show, says.words,
         modifier.graphicsLayer { translationY = (1f - rise.value) * with(density) { dock.toPx() }; alpha = rise.value },
         enabled = inView,
+        actionLabel = if (says.counting) "Jump to the newest message" else null,
+        // Away with the message pill, it is no live region: nothing is spoken for a pill that is not there.
+        role = if (says.counting) androidx.compose.ui.semantics.Role.Button else null, announce = says.counting && inView,
     ) { scope.launch { state.glideToPresent() } }
 }
 
+/** What the channel's pill says: [words], and whether they are a count of new messages ([counting]) rather than "Jump to present". */
+internal data class PillWords(val words: String, val counting: Boolean)
+
 /**
- * The look of a pill back to the newest message, as the channel's "Jump to present" and a thread's
- * new replies both have it: [words] and a down arrow, fading and scaling in while [show] holds.
+ * What the channel's pill says. While it shows ([show]): how many messages are new ([countWords])
+ * when there is a [count], and "Jump to present" otherwise. While it fades out: what it [said]
+ * last, so its words do not change on its way out.
+ */
+internal fun channelPillWords(show: Boolean, count: Int, countWords: String, said: PillWords): PillWords = when {
+    !show -> said
+    count > 0 -> PillWords(countWords, counting = true)
+    else -> PillWords("Jump to present", counting = false)
+}
+
+/**
+ * The look of a pill back to the newest message, as the channel's pill and a thread's new replies
+ * both have it: [words] and a down arrow, fading and scaling in while [show] holds.
  * [actionLabel] and [role] are what a screen reader names its tap and calls it; with [announce] it
  * is a polite live region, spoken when it shows and when its words change.
  */
