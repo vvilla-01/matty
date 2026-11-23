@@ -54,7 +54,7 @@ class NewRepliesWiringTest {
         assertTrue(screen.contains("if (scrollAway.hidden) (dock - navBottom).coerceAtLeast(0.dp) else 0.dp,"))
         assertTrue(screen.contains("val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()"))
         assertTrue("the thread's own count", screen.contains("val newReplies = rememberNewReplies(rootId, threadList, rows, repo.myId)"))
-        val follow = line(screen, "FollowNewest(threadList, rootId, rows.firstOrNull()?.post, repo.myId) { newest, followed ->")
+        val follow = line(screen, "FollowNewest(threadList, rootId, rows, repo.myId) { newest, followed ->")
         assertEquals("newReplies.decided(newest, followed, threadList.firstVisibleKey() as? String)", screen[follow + 1])
     }
 
@@ -74,7 +74,7 @@ class NewRepliesWiringTest {
         assertTrue(remembered.contains(".collect { newReplies.moved(state.firstVisibleKey() as? String) }"))
         // The list decides before it moves, in the one place that follows a new newest message.
         val follow = code(body(channel, "internal fun FollowNewest("))
-        assertTrue(follow.indexOf("onDecided(newest, follows)") in 0 until follow.indexOf("if (follows) state.animateScrollToItem(0)"))
+        assertTrue(follow.indexOf("onDecided(newest, follows)") in 0 until follow.indexOf("state.animateScrollToItem(0)"))
         val pill = code(body(replies, "internal fun NewRepliesPill("))
         assertTrue(pill.contains("newReplies.count > 0, newReplies.words, modifier,"))
         assertTrue(pill.contains("actionLabel = \"Jump to the newest reply\", role = Role.Button, announce = true,"))
@@ -87,7 +87,7 @@ class NewRepliesWiringTest {
         assertTrue("one list per conversation", screen.contains("val listState = remember(ch.id) { androidx.compose.foundation.lazy.LazyListState() }"))
         // A channel's list is in the order the phone received it, so it counts by place.
         val count = line(screen, "val newMessages = rememberNewReplies(ch.id, listState, rows, repo.myId, ::newMessagesWords, byPlace = true)")
-        val follow = line(screen, "FollowNewest(listState, ch.id, rows.firstOrNull()?.post, repo.myId) { newest, followed ->")
+        val follow = line(screen, "FollowNewest(listState, ch.id, rows, repo.myId) { newest, followed ->")
         assertTrue("the count is there before the list decides", count < follow)
         assertEquals("newMessages.decided(newest, followed, listState.firstVisibleKey() as? String)", screen[follow + 1])
         // Only what is a row of the list counts: a reply folded into its thread is not one.

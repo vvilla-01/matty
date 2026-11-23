@@ -162,7 +162,7 @@ fun ChatScreen(
         ceo.villa.matty.ui.ShareInbox.target == ch.id)
     // The messages by others that arrived below what you have had on screen, for the pill.
     val newMessages = rememberNewReplies(ch.id, listState, rows, repo.myId, ::newMessagesWords, byPlace = true)
-    FollowNewest(listState, ch.id, rows.firstOrNull()?.post, repo.myId) { newest, followed ->
+    FollowNewest(listState, ch.id, rows, repo.myId) { newest, followed ->
         newMessages.decided(newest, followed, listState.firstVisibleKey() as? String)
     }
     val headerPad = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() } + 68.dp
@@ -316,23 +316,38 @@ internal fun ScrollAwayEffects(away: ScrollAway, state: LazyListState, keep: Boo
 }
 
 /**
- * Follow the conversation: stick to the newest message when already near it, or when it's ours.
- * A chat and a thread both keep their list this way, newest first (index 0 at the bottom). [key]
- * is the conversation: the flag and the effects are its own, like the list they watch.
+ * Follow the conversation: stick to the newest message when already near it, or when it's ours
+ * and has just arrived. A chat and a thread both keep their list this way, newest first (index 0
+ * at the bottom), and hand over their [rows]. [key] is the conversation: the flag and the effects
+ * are its own, like the list they watch.
  * "Near it" is judged when the list comes to rest, not mid-glide: several messages landing at
  * once each start the glide again, and measured then it could look scrolled away and be left
- * stranded a few messages up. [onDecided] hears of each new newest message and whether the list
+ * stranded a few messages up. A list the reader's finger is on is not brought down at all
+ * ([followsNow]). While the list glides down to the reader's own message that has just arrived,
+ * it is following, so the glide goes on when the server's copy of that message takes its place.
+ * Whether ours has just arrived is judged against the rows of the composition before the newest
+ * changed ([arrivedNewest]). [onDecided] hears of each new newest message and whether the list
  * follows it, before the list moves.
  */
 @Composable
 internal fun FollowNewest(
-    state: LazyListState, key: Any?, newest: Post?, myId: String,
+    state: LazyListState, key: Any?, rows: List<MessageRowInfo>, myId: String,
     onDecided: (newest: Post, followed: Boolean) -> Unit = { _, _ -> },
 ) {
+    val newest = rows.firstOrNull()?.post
     var following by remember(key) { mutableStateOf(true) }
+    // The reader's finger is on the list, from the start of a drag until it is let go.
+    var dragging by remember(key) { mutableStateOf(false) }
+    // The rows of the composition before this one, read here before this one's are published.
+    val held = remember(key) { HeldRows() }
+    val before = held.rows
+    androidx.compose.runtime.SideEffect { held.rows = rows }
     LaunchedEffect(state, key) {
         androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }.collect { moving ->
-            if (!moving) following = state.firstVisibleItemIndex <= NEAR_NEWEST
+            if (!moving) {
+                following = state.firstVisibleItemIndex <= NEAR_NEWEST
+                dragging = false
+            }
         }
     }
     // The reader's own drag or flick ends "following" at once (the list's own glide to a new
@@ -340,26 +355,62 @@ internal fun FollowNewest(
     // back down. Where it comes to rest decides again.
     LaunchedEffect(state, key) {
         state.interactionSource.interactions.collect {
-            if (it is androidx.compose.foundation.interaction.DragInteraction.Start) following = false
+            when (it) {
+                is androidx.compose.foundation.interaction.DragInteraction.Start -> { following = false; dragging = true }
+                is androidx.compose.foundation.interaction.DragInteraction.Stop,
+                is androidx.compose.foundation.interaction.DragInteraction.Cancel -> dragging = false
+            }
         }
     }
     LaunchedEffect(newest?.id) {
         if (newest == null) return@LaunchedEffect
-        val follows = followsNewest(following, state.firstVisibleItemIndex, newest.userId == myId)
+        val mine = newest.userId == myId && arrivedNewest(newest, before.map { it.post })
+        val follows = followsNow(dragging, following, state.firstVisibleItemIndex, mine)
         onDecided(newest, follows)
-        if (follows) state.animateScrollToItem(0)
+        if (!follows) return@LaunchedEffect
+        // The server's copy of the reader's message has not arrived: without this it would stop the glide to it.
+        if (mine) following = true
+        state.animateScrollToItem(0)
     }
+}
+
+/** What a list held in its last composition, kept across compositions without being state. */
+private class HeldRows {
+    var rows: List<MessageRowInfo> = emptyList()
 }
 
 /** How many messages up from the newest still count as being at it. */
 internal const val NEAR_NEWEST = 2
 
 /**
- * Whether a new newest message brings the list down to it: always when it's [mine] (just sent),
- * and otherwise while the list is [following] or within [NEAR_NEWEST] of the bottom.
+ * Whether a new newest message brings the list down to it: always when it's [mine] and has just
+ * arrived ([arrivedNewest]), and otherwise while the list is [following] or within [NEAR_NEWEST]
+ * of the bottom.
  */
 internal fun followsNewest(following: Boolean, firstVisible: Int, mine: Boolean): Boolean =
     mine || following || firstVisible <= NEAR_NEWEST
+
+/**
+ * Whether the list comes down to a new newest message now: never while the reader's finger is on it
+ * ([dragging]: the drag holds the list where it is), and otherwise as [followsNewest] says.
+ */
+internal fun followsNow(dragging: Boolean, following: Boolean, firstVisible: Int, mine: Boolean): Boolean =
+    !dragging && followsNewest(following, firstVisible, mine)
+
+/**
+ * Whether [newest] has just arrived in a list that held [before]: it was not there, neither under
+ * its own id nor under the id it was sent with (its pendingPostId), nor as a message sent with its
+ * id. A message just sent from this phone, and one sent from another device, have arrived; the
+ * reader's own message as the server gives it back, and an older message left at the newest end
+ * when what was newer went away, have not. Everything a list opens with has arrived.
+ */
+internal fun arrivedNewest(newest: Post, before: List<Post>): Boolean {
+    val sentAs = newest.pendingPostId.ifEmpty { null }
+    return before.none { held ->
+        held.id == newest.id || held.id == sentAs ||
+            (held.pendingPostId.isNotEmpty() && (held.pendingPostId == newest.id || held.pendingPostId == sentAs))
+    }
+}
 
 /**
  * Typing in (or about to type into) the box keyed [draftKey]: the keyboard or the emoji popup is

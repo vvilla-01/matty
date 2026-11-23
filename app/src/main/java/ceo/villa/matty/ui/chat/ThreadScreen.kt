@@ -112,8 +112,8 @@ fun ThreadScreen(nav: Navigator, rootId: String) {
             val threadList = rememberLazyListState()
             // The replies by others that arrived below what you have had on screen, for the pill.
             val newReplies = rememberNewReplies(rootId, threadList, rows, repo.myId)
-            // As in the channel: the thread follows its newest reply, yours always.
-            FollowNewest(threadList, rootId, rows.firstOrNull()?.post, repo.myId) { newest, followed ->
+            // As in the channel: the thread follows its newest reply, yours always when it has just arrived.
+            FollowNewest(threadList, rootId, rows, repo.myId) { newest, followed ->
                 newReplies.decided(newest, followed, threadList.firstVisibleKey() as? String)
             }
             ScrollAwayEffects(scrollAway, threadList, keep = editing != null || typingHere("${root?.channelId}|$rootId") ||
