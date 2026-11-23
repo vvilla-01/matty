@@ -32,6 +32,11 @@ data class SavedServer(
      * cold start is held to it before the server has been asked again, and gone with it at sign-out.
      */
     val policy: ServerPolicy = ServerPolicy(),
+    /**
+     * A newer Matty that this server last required (see [AppNeed]), null for none: kept with its
+     * session, so a cold start shows the update page before the server has been asked again.
+     */
+    val appNeed: AppNeed? = null,
 )
 
 /**
@@ -85,6 +90,12 @@ class SessionStore(context: Context) {
     /** What [id]'s server now requires (see [PolicyKeeper]), kept for the next start. */
     fun rememberPolicy(id: String, policy: ServerPolicy) {
         val list = _servers.value.map { if (it.id == id) it.copy(policy = policy) else it }
+        if (list != _servers.value) persist(list)
+    }
+
+    /** What newer Matty [id]'s server now requires (see [AppNeedKeeper]), kept for the next start. */
+    fun rememberAppNeed(id: String, need: AppNeed?) {
+        val list = _servers.value.map { if (it.id == id) it.copy(appNeed = need) else it }
         if (list != _servers.value) persist(list)
     }
 

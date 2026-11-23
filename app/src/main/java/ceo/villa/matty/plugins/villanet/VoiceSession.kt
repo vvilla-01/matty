@@ -74,10 +74,14 @@ class VoiceSession internal constructor(private val c: AppContainer, private val
     val moving: StateFlow<Int?> = core.moving
     /** This phone's own place: its session, its name on the voice server, its channel. */
     val seat: StateFlow<VoiceSeat?> = core.seat
-    /** Muted as it holds (the person's choice, deafened, a phone call, no microphone permission). */
-    val muted: StateFlow<Boolean> = core.muted
-    /** Deafened as it holds (the person's choice, or a phone call). */
-    val deafened: StateFlow<Boolean> = core.deafened
+    /**
+     * Muted as shown: as it holds (the person's choice, deafened, a phone call, no microphone
+     * permission), or as the voice server holds it once that has had its time (see [VoiceCore]).
+     * A tap asks for the opposite of this.
+     */
+    val muted: StateFlow<Boolean> = core.shownMuted
+    /** Deafened as shown: as it holds (the person's choice, or a phone call), or as the voice server holds it. */
+    val deafened: StateFlow<Boolean> = core.shownDeafened
     /** The person's own choices, apart from what is added to them. */
     val selfMuted: StateFlow<Boolean> = core.selfMuted
     val selfDeafened: StateFlow<Boolean> = core.selfDeafened
@@ -87,7 +91,17 @@ class VoiceSession internal constructor(private val c: AppContainer, private val
     val serverMuted: StateFlow<Boolean> = core.serverMuted
     /** This session may not speak in this channel. */
     val suppressed: StateFlow<Boolean> = core.suppressed
-    /** The sessions being heard on this phone now, this phone's own included while its voice goes out. */
+    /**
+     * Muted as the others in the channel hear it: as [muted] shows, or held muted by the voice
+     * server (muted or suppressed). The own tile and the microphone's icon show this; a tap still
+     * acts on [muted].
+     */
+    val seenMuted: StateFlow<Boolean> = core.seenMuted
+    /** The server's own sentence while a join it refused is waited out (see [VoiceCore.waitWords]). */
+    val waitWords: StateFlow<String?> = core.waitWords
+    /** The link is down while the core waits to see whether it comes back: a connected session shows as reconnecting ([voiceShownStatus]). */
+    val linkDown: StateFlow<Boolean> = core.linkDown
+    /** The sessions being heard on this phone now, this phone's own included while its voice goes out and it is not seen muted ([seenMuted]); nobody while [linkDown]. */
     val talking: StateFlow<Set<Long>> = core.talking
     /** Whether the microphone may be used. */
     val mic: StateFlow<MicPermission> = core.mic
@@ -167,7 +181,7 @@ class VoiceSession internal constructor(private val c: AppContainer, private val
      * Matty, which unmutes here, on screen, so that the service can take the microphone first.
      */
     internal fun unmuteOnScreen() {
-        if (core.active && core.muted.value) setMuted(false)
+        if (core.active && core.shownMuted.value) setMuted(false)
     }
 
     /** The person picked an output ([VoiceOutput.id]); null goes back to the automatic choice. */
@@ -279,6 +293,13 @@ class VoiceSession internal constructor(private val c: AppContainer, private val
                     if (!core.current(attempt) || peer !== p) return@launch
                     val sdp = p.pc.localDescription?.description ?: offer.description
                     voiceOfferTrouble(sdp)?.let { Log.w("Matty", "voice: the offer is not as the contract asks: $it") }
+                    // A state request of an earlier connection still out could reach the server
+                    // after this join and undo what the join carries: it is waited for, two
+                    // seconds at most, then given up and cancelled on the wire (over HTTP/2 that
+                    // ends the request, not the connection). One already on its way may still
+                    // arrive; the voice server's word then shows it.
+                    states.settle()
+                    if (!core.current(attempt) || peer !== p) return@launch
                     val answer = a.voiceJoin(join.channel, join.muted, join.deafened, sdp)
                     if (!core.current(attempt) || peer !== p) return@launch
                     // Mute may have changed while the join was on its way: as it is now, before the answer is set.
@@ -371,8 +392,14 @@ class VoiceSession internal constructor(private val c: AppContainer, private val
     private fun watchNetwork(on: Boolean) {
         val cm = c.app.getSystemService(ConnectivityManager::class.java) ?: return
         if (on && networkWatch == null) {
+            // The default network: which one it is (another one in its place makes the
+            // connection again), and its loss (acted on only when no other is there).
             val cb = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) { main.post { core.network(true) } }
+                override fun onAvailable(network: Network) {
+                    val id = network.networkHandle
+                    main.post { core.network(true, id) }
+                }
+                override fun onLost(network: Network) { main.post { core.network(false) } }
             }
             if (runCatching { cm.registerDefaultNetworkCallback(cb) }.isSuccess) networkWatch = cb
         } else if (!on) {

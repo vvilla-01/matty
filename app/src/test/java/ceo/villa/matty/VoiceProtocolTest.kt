@@ -128,6 +128,11 @@ class VoiceProtocolTest {
         assertEquals(VoiceMessage.Talking(emptySet()), voiceMessageOf("""{"talking":[]}"""))
         assertEquals(VoiceMessage.Self(2, muted = false, suppressed = true), voiceMessageOf("""{"self":{"channel":2,"muted":false,"suppressed":true}}"""))
         assertEquals("channel 0 left out is the root", VoiceMessage.Self(0, muted = true, suppressed = false), voiceMessageOf("""{"self":{"muted":true}}"""))
+        assertEquals(
+            "the voice server's own word on the self mute and deafen",
+            VoiceMessage.Self(1, muted = false, suppressed = false, selfMuted = true, selfDeafened = false),
+            voiceMessageOf("""{"self":{"channel":1,"muted":false,"suppressed":false,"selfMuted":true,"selfDeafened":false}}"""),
+        )
         assertEquals(VoiceMessage.End("kicked", "Kicked by an admin."), voiceMessageOf("""{"end":"kicked","reason":"Kicked by an admin."}"""))
         assertEquals(VoiceMessage.End("mumble", ""), voiceMessageOf("""{"end":"mumble"}"""))
         assertNull(voiceMessageOf("not json"))
@@ -305,6 +310,16 @@ class VoiceProtocolTest {
         assertTrue(deaf.muted && deaf.deaf)
         // Nobody speaks while this phone is in no channel.
         assertFalse(voiceRoomsOf(v, accounts::get, talking = setOf(15L))[1].people.any { it.speaking })
+    }
+
+    @Test
+    fun thisPhonesRingIsOffWhileItIsShownMutedOrDeafened() {
+        val v = decode(VnSnapshot.serializer(), snapshotVoice).voice
+        val seat = VoiceSeat(session = 30, name = "dave (Matty)", channel = 2, userId = "u-dave")
+        val muted = voiceRoomsOf(v, accounts::get, seat, muted = true, deafened = false, talking = setOf(30L, 15L))
+        assertFalse("heard by the server, but shown muted", muted[2].people.single().speaking)
+        assertTrue("the others' rings are as heard", muted[1].people.single().speaking)
+        assertFalse(voiceRoomsOf(v, accounts::get, seat, muted = false, deafened = true, talking = setOf(30L))[2].people.single().speaking)
     }
 
     @Test

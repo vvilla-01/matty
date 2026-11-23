@@ -75,6 +75,7 @@ import ceo.villa.matty.data.session.TwoFactor
 import ceo.villa.matty.ui.lock.AppLock
 import ceo.villa.matty.ui.lock.SecureWindow
 import ceo.villa.matty.ui.lock.ServerGate
+import ceo.villa.matty.ui.lock.UpdateGate
 import ceo.villa.matty.ui.chat.SearchScreen
 import ceo.villa.matty.ui.chat.ThreadScreen
 import ceo.villa.matty.ui.components.EmptyState
@@ -129,7 +130,8 @@ fun MattyRoot(activity: MainActivity) {
             // Made outside the lock, so where the person was is still there once they unlock.
             val railPages = rememberSaveable(r, saver = RailPages.Saver) { RailPages() }
             val nav = remember(r) { Navigator(activity, c, r, r.scope, railPages) }
-            ServerGate(activity, r) { Session(activity, r, nav) }
+            // The lock first, then the update page of a server that takes no Matty this old.
+            ServerGate(activity, r) { UpdateGate(activity, r, nav) { Session(activity, r, nav) } }
         }
         StatusBarScrimView()
     }

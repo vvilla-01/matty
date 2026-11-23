@@ -101,7 +101,7 @@ class VoiceService : Service() {
         up = this
         if (voice == null || now == null) { finish(); return START_NOT_STICKY }
         if (following == null) following = scope.launch {
-            combine(voice.state, voice.channel, voice.muted, voice.since, voice.deafened) { _, _, _, _, _ -> describe(voice) }
+            combine(combine(voice.state, voice.linkDown, ::Pair), voice.channel, combine(voice.muted, voice.seenMuted, ::Pair), voice.since, voice.deafened) { _, _, _, _, _ -> describe(voice) }
                 .distinctUntilChanged().collect { d -> if (d == null) finish() else show(d) }
         }
         return START_NOT_STICKY
@@ -136,16 +136,17 @@ class VoiceService : Service() {
 
     /** What the notification says, or null when there is no session any more. */
     private fun describe(v: VoiceSession): Calling? {
-        val title = when (v.state.value) {
+        val title = when (voiceShownStatus(v.state.value, v.linkDown.value)) {
             VoiceStatus.Connected -> "Voice Connected"
             VoiceStatus.Connecting -> "Connecting…"
             VoiceStatus.Reconnecting -> "Reconnecting…"
             else -> return null
         }
-        return Calling(title, v.channelName(), v.muted.value, v.since.value, v.serverName, v.serverId())
+        return Calling(title, v.channelName(), v.muted.value, v.seenMuted.value, v.since.value, v.serverName, v.serverId())
     }
 
-    private data class Calling(val title: String, val channel: String, val muted: Boolean, val since: Long, val name: String, val serverId: String?)
+    /** [muted] is the person's own mute, which the button acts on; [seen] is muted as the others hear it, the voice server's hold included, which the text says. */
+    private data class Calling(val title: String, val channel: String, val muted: Boolean, val seen: Boolean, val since: Long, val name: String, val serverId: String?)
 
     private fun show(d: Calling) {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(d))
@@ -164,7 +165,7 @@ class VoiceService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_matty)
             .setContentTitle(d?.title ?: "Voice Connected")
-            .setContentText(d?.let { if (it.muted) "${it.channel} · Muted" else it.channel } ?: "Voice")
+            .setContentText(d?.let { if (it.seen) "${it.channel} · Muted" else it.channel } ?: "Voice")
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

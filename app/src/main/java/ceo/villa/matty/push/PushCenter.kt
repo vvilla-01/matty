@@ -11,6 +11,7 @@ import androidx.core.app.NotificationManagerCompat
 import ceo.villa.matty.AppContainer
 import ceo.villa.matty.data.runCatchingCancellable
 import ceo.villa.matty.data.session.SavedServer
+import ceo.villa.matty.data.session.closesTo
 import ceo.villa.matty.plugins.villanet.VillaNetApi
 import ceo.villa.matty.plugins.villanet.VillaNetException
 import ceo.villa.matty.plugins.villanet.VnPushRegistration
@@ -124,9 +125,9 @@ class PushCenter(private val c: AppContainer) : PushSink {
     }
 
     /**
-     * [serverId] has just passed the app check: what push owes it (a DELETE, a PUT or a confirm
-     * the check refused, a look that could not be made) is sent now. Decided under the server's
-     * lock, so that a refusal still being written when the check passed is paid too.
+     * [serverId] has just passed the app check, or opened to this version again: what push owes
+     * it (a DELETE, a PUT or a confirm it refused, a look that could not be made) is sent now.
+     * Decided under the server's lock, so that a refusal still being written then is paid too.
      */
     fun payOwed(serverId: String) {
         val server = c.sessionStore.servers.value.firstOrNull { it.id == serverId } ?: return
@@ -414,6 +415,8 @@ class PushCenter(private val c: AppContainer) : PushSink {
         }
         store.updateSide(server.id) { it.copy(offer = offer, reason = if (offer == PushSide.OFFER_OFF) word?.reason.orEmpty() else "", unreachable = false) }
         if (offer != PushSide.OFFER_ON) return@withLock
+        // A server closed to this version refuses the rest: what is owed waits until it opens.
+        if (closed(server.id)) return@withLock
         val key = word!!.key
         if (!UnifiedPush.isVapid(key)) return@withLock
         val chosen = store.distributor ?: return@withLock
@@ -468,7 +471,7 @@ class PushCenter(private val c: AppContainer) : PushSink {
 
     /** `PUT /me/push` with [serverId]'s current address, keys and key; never an address the server refused for good. */
     private suspend fun putLocked(serverId: String, why: PushPlan.Why, seconds: Long) {
-        if (!store.enabled) return
+        if (!store.enabled || closed(serverId)) return
         val chosen = store.distributor ?: return
         val r = store.registration(serverId, chosen) ?: return
         val endpoint = r.endpoint ?: return
@@ -494,7 +497,7 @@ class PushCenter(private val c: AppContainer) : PushSink {
 
     /** The hello's answer. A superseded hello (409) changes nothing. */
     private suspend fun confirmLocked(serverId: String, nonce: String, seconds: Long) {
-        if (nonce.isEmpty()) return
+        if (nonce.isEmpty() || closed(serverId)) return
         val one = withContext(Dispatchers.IO) { c.sessions.oneOff(serverId, seconds) } ?: return
         val answer = try {
             one.plugin.pushConfirm(nonce)
@@ -517,6 +520,14 @@ class PushCenter(private val c: AppContainer) : PushSink {
     }
 
     /**
+     * Whether [serverId] is closed to this version of the app, as kept with the saved server
+     * ([SavedServer.appNeed]): its plugin refuses every push route but the DELETE, so nothing else
+     * is sent to it. What is owed stays owed, and is paid when the server opens ([payOwed]).
+     */
+    private fun closed(serverId: String): Boolean =
+        closesTo(c.sessionStore.servers.value.firstOrNull { it.id == serverId }?.appNeed, ceo.villa.matty.BuildConfig.VERSION_NAME)
+
+    /**
      * A push route refused [e]: a session the server confirms is over ends here; a key that is no
      * longer the server's is replaced; anything else is as [PushPlan.afterRefusal] says. A PUT or
      * confirm owed for anything but the app check (which is paid once the check passes) is also
@@ -536,7 +547,8 @@ class PushCenter(private val c: AppContainer) : PushSink {
             }
         }
         val side = store.updateSide(serverId) { PushPlan.afterRefusal(it, e, owe, endpoint) }
-        if (PushPlan.owesSend(side) && v?.code != VillaNetApi.APP_UNVERIFIED) payLater(serverId, v?.retryAfterMs ?: 0)
+        // Neither the app check nor an app older than the server takes passes by being asked again.
+        if (PushPlan.owesSend(side) && v?.code != VillaNetApi.APP_UNVERIFIED && v?.code != VillaNetApi.APP_OUTDATED) payLater(serverId, v?.retryAfterMs ?: 0)
     }
 
     /** The owed PUT or confirm of a server being sent again by itself, and the wait its server named last. */
@@ -615,6 +627,8 @@ class PushCenter(private val c: AppContainer) : PushSink {
             delay((side.pendingAt + PushPlan.HELLO_WAIT_MS - System.currentTimeMillis()).coerceAtLeast(0) + 500)
             lock(serverId).withLock {
                 if (!store.enabled || !PushPlan.helloDue(store.side(serverId), System.currentTimeMillis())) return@withLock
+                // A server closed to this Matty is asked nothing it would refuse: its sync asks once it opens.
+                if (closed(serverId)) return@withLock
                 val one = c.sessions.oneOff(serverId, OneOff.ACTION_SECONDS) ?: return@withLock
                 val answer = try {
                     one.plugin.pushState()

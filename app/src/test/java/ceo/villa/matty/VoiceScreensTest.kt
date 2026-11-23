@@ -31,6 +31,7 @@ import ceo.villa.matty.plugins.villanet.voiceNoTalkWords
 import ceo.villa.matty.plugins.villanet.voiceNoticeOf
 import ceo.villa.matty.plugins.villanet.voicePeopleWords
 import ceo.villa.matty.plugins.villanet.voiceRoomsOf
+import ceo.villa.matty.plugins.villanet.voiceShownStatus
 import ceo.villa.matty.plugins.villanet.voiceStatusWords
 import ceo.villa.matty.plugins.villanet.voiceTilesOf
 import org.junit.Assert.assertEquals
@@ -167,6 +168,16 @@ class VoiceScreensTest {
         assertFalse(VoiceStatus.Failed("x").inCall)
     }
 
+    @Test
+    fun aConnectedSessionWhoseLinkIsDownShowsReconnecting() {
+        assertEquals("Reconnecting…", voiceStatusWords(voiceShownStatus(connected, linkDown = true)))
+        assertEquals(VoiceBar("Reconnecting…", "Lobby · Villa", connected = false, controls = true), voiceBarOf(voiceShownStatus(connected, linkDown = true), "Lobby", "Villa"))
+        assertEquals("back: connected again", "Voice Connected", voiceStatusWords(voiceShownStatus(connected, linkDown = false)))
+        assertEquals(VoiceStatus.Connecting, voiceShownStatus(VoiceStatus.Connecting, linkDown = true))
+        assertEquals(VoiceStatus.Reconnecting, voiceShownStatus(VoiceStatus.Reconnecting, linkDown = false))
+        assertEquals(VoiceStatus.Idle, voiceShownStatus(VoiceStatus.Idle, linkDown = true))
+    }
+
     // ---- the voice screen --------------------------------------------------------------------
 
     @Test
@@ -193,6 +204,10 @@ class VoiceScreensTest {
         assertEquals(VoiceNotice("You can't speak in this channel.", false), voiceNoticeOf(false, false, true, MicPermission.Refused))
         assertEquals(VoiceNotice("The voice server has muted you.", false), voiceNoticeOf(false, true, true, MicPermission.Granted))
         assertEquals("a phone call comes first", VoiceNotice("On hold while a phone call has the audio.", false), voiceNoticeOf(true, true, true, MicPermission.Refused))
+        // While a join the server refused is waited out, the server's sentence, before anything else.
+        val wait = "Too many new connections to voice just now. Try again in a minute."
+        assertEquals(VoiceNotice(wait, false), voiceNoticeOf(false, false, false, MicPermission.Granted, waiting = wait))
+        assertEquals(VoiceNotice(wait, false), voiceNoticeOf(true, true, true, MicPermission.Refused, waiting = wait))
     }
 
     @Test

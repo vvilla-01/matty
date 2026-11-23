@@ -5,6 +5,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** What a join carries: the channel, how it starts, and whether the microphone records from the start. */
 internal data class VoiceJoin(val channel: Int, val muted: Boolean, val deafened: Boolean, val record: Boolean)
@@ -68,6 +69,22 @@ internal interface VoicePort {
  * microphone permission add to. Deafened is always muted too. The microphone records only while
  * not muted, and while the server neither mutes nor suppresses this session.
  *
+ * What is shown ([shownMuted], [shownDeafened]) is what holds, or the voice server's own word when
+ * that says muted (or deafened) and [SERVER_WORD_MS] have passed since what holds last changed, the
+ * person last tapped, or the join was answered (see [voiceShown]): a tap shows at once, and the
+ * screen never claims for long what the voice server doesn't allow. A tap acts on what is shown,
+ * and while what is shown is the server's word it is sent even when it asks for what was asked
+ * already. [seenMuted] adds the voice server's own hold (muted or suppressed by its admins): the
+ * own tile and the microphone's icon show that, and this phone's own session is left out of
+ * [talking] while it holds.
+ *
+ * A join the server refused for a while with its own sentence keeps that sentence in [waitWords]
+ * while the wait lasts; the retries are as for any other refusal to wait out.
+ *
+ * The network: with none at all the connection is lost at once, and another default network in
+ * place of the one before makes the connection again at once (see [network]). A link that is
+ * disconnected is shown as reconnecting, with nobody talking, while [DROP_MS] runs ([linkDown]).
+ *
  * [refusedForGood]: the microphone was refused for good before this start of Matty, and is not
  * granted now.
  */
@@ -107,6 +124,37 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
     private val _suppressed = MutableStateFlow(false)
     val suppressed: StateFlow<Boolean> = _suppressed
 
+    private val _shownMuted = MutableStateFlow(false)
+    val shownMuted: StateFlow<Boolean> = _shownMuted
+    private val _shownDeafened = MutableStateFlow(false)
+    val shownDeafened: StateFlow<Boolean> = _shownDeafened
+
+    /**
+     * Muted as the others in the channel hear it: shown muted ([shownMuted]), or held muted by the
+     * voice server ([serverMuted], [suppressed]). The own tile and the microphone's icon show this;
+     * a tap still acts on [shownMuted], the person's own mute.
+     */
+    private val _seenMuted = MutableStateFlow(false)
+    val seenMuted: StateFlow<Boolean> = _seenMuted
+
+    /**
+     * The server's own sentence while a join it refused (429, or 503 with a sentence) is waited
+     * out; null otherwise. It goes when the join is tried again, when voice connects and on leaving.
+     */
+    private val _waitWords = MutableStateFlow<String?>(null)
+    val waitWords: StateFlow<String?> = _waitWords
+
+    /**
+     * The link is disconnected and [DROP_MS] runs: what is shown only. The screens say
+     * "Reconnecting…" for a connected session while it holds (see [voiceShownStatus]), and
+     * [talking] is empty, to show again who the server last named once the link is back; the
+     * status and the timers are as they are without it.
+     */
+    private val _linkDown = MutableStateFlow(false)
+    val linkDown: StateFlow<Boolean> = _linkDown
+
+    /** The sessions being heard, as the server said; [talking] is this, less this phone's own while it is seen muted. */
+    private var heard: Set<Long> = emptySet()
     private val _talking = MutableStateFlow<Set<Long>>(emptySet())
     val talking: StateFlow<Set<Long>> = _talking
 
@@ -128,6 +176,8 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
     private var linked = false
     private var retries = 0
     private var waitingForNetwork = false
+    /** The default network the watch last named ([network]); null until it names one in this session. */
+    private var networkId: Long? = null
     /** A move asked for while the join was being answered: sent once connected. */
     private var pendingMove: Int? = null
     private var userId = ""
@@ -139,6 +189,13 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
     private var stateRetries = 0
     private var connectTimer: (() -> Unit)? = null
     private var dropTimer: (() -> Unit)? = null
+    /** The voice server's own word on this session's self mute and self deafen (the data channel's `self`). */
+    private var serverSaysMuted = false
+    private var serverSaysDeafened = false
+    /** When ([VoicePort.now]) what holds last changed, the person last tapped, or the join was answered. */
+    private var changedAt = 0L
+    /** Shows the server's word once [SERVER_WORD_MS] have passed. */
+    private var showTimer: (() -> Unit)? = null
 
     /** Whether a session is under way (not idle, not failed). */
     val active: Boolean get() = _status.value.let { it == VoiceStatus.Connecting || it == VoiceStatus.Connected || it == VoiceStatus.Reconnecting }
@@ -164,16 +221,21 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         _held.value = false
         _serverMuted.value = false
         _suppressed.value = false
-        _talking.value = emptySet()
+        serverSaysMuted = false
+        serverSaysDeafened = false
+        hear(emptySet())
         _seat.value = null
         _moving.value = null
         _since.value = 0
         _channel.value = channel
         retries = 0
         waitingForNetwork = false
+        // The watch starts with this session ([VoicePort.begin]): the first network it names is no change.
+        networkId = null
         if (!muted && _mic.value != MicPermission.Granted) _micWanted.value = true
         _status.value = VoiceStatus.Connecting
         derive()
+        show()
         port.begin()
         applyAudio()
         connectNow()
@@ -192,20 +254,24 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         port.sendMove(attempt, channel)
     }
 
-    /** Mutes or unmutes. Unmuting undeafens too, and without the permission asks for it. */
+    /**
+     * Mutes or unmutes (a tap, which asks for the opposite of what is shown). Unmuting undeafens
+     * too, and without the permission asks for it. Sent even when it was asked for already, while
+     * what was shown was the voice server's word (see [changed]).
+     */
     fun setMuted(on: Boolean) {
         if (!on) {
             _selfDeafened.value = false
             if (_mic.value != MicPermission.Granted) _micWanted.value = true
         }
         _selfMuted.value = on
-        changed()
+        changed(tapped = true)
     }
 
-    /** Deafens (which mutes too) or undeafens (back to the mute chosen before). */
+    /** Deafens (which mutes too) or undeafens (back to the mute chosen before), as [setMuted] does. */
     fun setDeafened(on: Boolean) {
         _selfDeafened.value = on
-        changed()
+        changed(tapped = true)
     }
 
     /** Leaves voice: the server is told, and everything is taken down. From Failed, only forgotten. */
@@ -264,7 +330,7 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         val was = _status.value
         if (was != VoiceStatus.Connecting && was != VoiceStatus.Connected) return
         stopTimers()
-        _talking.value = emptySet()
+        hear(emptySet())
         // The new join carries the channel a move was on its way to.
         (pendingMove ?: _moving.value)?.let { _channel.value = it }
         pendingMove = null
@@ -298,6 +364,8 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         _seat.value = VoiceSeat(joined.session, joined.name, joined.channel, userId)
         val wanted = _channel.value
         _channel.value = joined.channel
+        changedAt = port.now()
+        show()
         // A change made while the join was on its way.
         if (told != (_muted.value to _deafened.value)) tell()
         if (wanted != null && wanted != joined.channel) pendingMove = wanted
@@ -309,7 +377,11 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         if (!current(a)) return
         when (r.retry) {
             VoiceRetry.Stop -> fail(r.sentence)
-            VoiceRetry.Wait -> lost(r.waitMs)
+            VoiceRetry.Wait -> {
+                lost(r.waitMs)
+                // What is shown only: the wait is as for any other refusal.
+                if (r.serverSaid) _waitWords.value = r.sentence
+            }
         }
     }
 
@@ -319,12 +391,19 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         when (state) {
             VoiceLink.Connecting -> {}
             VoiceLink.Connected -> {
-                dropTimer?.invoke(); dropTimer = null
+                stopDrop()
+                publishTalking()
                 linked = true
                 if (answered) up()
             }
-            // Disconnected often comes back by itself: only 5 s of it is a loss.
-            VoiceLink.Disconnected -> if (dropTimer == null) dropTimer = port.later(DROP_MS) { dropTimer = null; if (current(a)) lost(0) }
+            // Disconnected often comes back by itself: only 5 s of it is a loss. Meanwhile
+            // nothing is heard, so nobody is shown talking, and the screens say so. Who was
+            // talking is kept: the server names them again only when that changes.
+            VoiceLink.Disconnected -> if (dropTimer == null) {
+                dropTimer = port.later(DROP_MS) { dropTimer = null; _linkDown.value = false; if (current(a)) lost(0) }
+                _linkDown.value = true
+                publishTalking()
+            }
             VoiceLink.Failed -> lost(0)
         }
     }
@@ -338,12 +417,15 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
     fun message(a: Int, m: VoiceMessage) {
         if (!current(a)) return
         when (m) {
-            is VoiceMessage.Talking -> _talking.value = m.sessions
+            is VoiceMessage.Talking -> hear(m.sessions)
             is VoiceMessage.Self -> {
                 _channel.value = m.channel
                 _seat.value = _seat.value?.copy(channel = m.channel)
                 _serverMuted.value = m.muted
                 _suppressed.value = m.suppressed
+                serverSaysMuted = m.selfMuted
+                serverSaysDeafened = m.selfDeafened
+                show()
                 applyAudio()
             }
             is VoiceMessage.End -> if (m.code == END_MUMBLE) lost(0) else fail(endSentence(m.code, m.reason))
@@ -384,11 +466,31 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         port.notice(sentence)
     }
 
-    /** The network came ([up]) or went. */
-    fun network(up: Boolean) {
-        if (up && waitingForNetwork && _status.value == VoiceStatus.Reconnecting) {
+    /**
+     * The default network came ([up]), named by [id] when known, or went. Gone with no other
+     * network there ([VoicePort.online] false), a connected or connecting session, or one whose
+     * join again is on its way, is lost at once, and joins again once a network comes. Another network in place of the one before while
+     * connected: the old path is dead, so the connection is made again at once ([renew]). The
+     * first network named in a session, and the same one named again, are no change; while
+     * joining or trying again, a new one is only noted.
+     */
+    fun network(up: Boolean, id: Long? = null) {
+        val s = _status.value
+        if (!up) {
+            // A connection, or an attempt at one that is on its way (a first join, or a join
+            // again that is neither waiting for its turn nor for a network).
+            val inHand = s == VoiceStatus.Connected || s == VoiceStatus.Connecting ||
+                (s == VoiceStatus.Reconnecting && retryTimer == null && !waitingForNetwork)
+            if (inHand && !port.online()) lost(0)
+            return
+        }
+        val before = networkId
+        if (id != null) networkId = id
+        if (waitingForNetwork && s == VoiceStatus.Reconnecting) {
             waitingForNetwork = false
             connectNow()
+        } else if (s == VoiceStatus.Connected && id != null && before != null && id != before) {
+            renew()
         }
     }
 
@@ -397,11 +499,16 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
     private fun connectNow() {
         retryTimer?.invoke(); retryTimer = null
         connectTimer?.invoke(); connectTimer = null
-        dropTimer?.invoke(); dropTimer = null
+        stopDrop()
+        _waitWords.value = null
         attempt++
         answered = false
         linked = false
         stateRetries = 0
+        // The server's word was about the connection before: only this one's counts from now.
+        serverSaysMuted = false
+        serverSaysDeafened = false
+        show()
         val a = attempt
         val join = VoiceJoin(_channel.value ?: 0, _muted.value, _deafened.value, recordingNow)
         told = join.muted to join.deafened
@@ -412,6 +519,7 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
     private fun up() {
         connectTimer?.invoke(); connectTimer = null
         retries = 0
+        _waitWords.value = null
         if (_since.value == 0L) _since.value = port.wall()
         _status.value = VoiceStatus.Connected
         pendingMove?.let { pendingMove = null; move(it) }
@@ -423,7 +531,8 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         attempt++
         answered = false
         linked = false
-        _talking.value = emptySet()
+        hear(emptySet())
+        show()
         // The next join carries the channel a move was on its way to.
         (pendingMove ?: _moving.value)?.let { _channel.value = it }
         pendingMove = null
@@ -435,6 +544,7 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         val a = attempt
         retryTimer = port.later(wait) {
             retryTimer = null
+            if (a == attempt) _waitWords.value = null
             if (a != attempt || _status.value != VoiceStatus.Reconnecting) return@later
             if (!port.online()) waitingForNetwork = true else connectNow()
         }
@@ -456,7 +566,9 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         linked = false
         waitingForNetwork = false
         told = null
-        _talking.value = emptySet()
+        serverSaysMuted = false
+        serverSaysDeafened = false
+        heard = emptySet()
         _seat.value = null
         _moving.value = null
         _since.value = 0
@@ -465,14 +577,23 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         _serverMuted.value = false
         _suppressed.value = false
         _channel.value = null
+        _waitWords.value = null
+        show()
     }
 
     private fun stopTimers() {
         retryTimer?.invoke(); retryTimer = null
         connectTimer?.invoke(); connectTimer = null
-        dropTimer?.invoke(); dropTimer = null
+        stopDrop()
         stateTimer?.invoke(); stateTimer = null
+        showTimer?.invoke(); showTimer = null
         stateRetries = 0
+    }
+
+    /** The wait of a disconnected link ends (it is back, or the connection goes): [linkDown] goes with it. */
+    private fun stopDrop() {
+        dropTimer?.invoke(); dropTimer = null
+        _linkDown.value = false
     }
 
     private fun derive() {
@@ -487,18 +608,64 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         port.speakerMuted(_deafened.value)
     }
 
+    /**
+     * What is shown, from what holds and the server's word (see [voiceShown]); while the server's
+     * word is not shown yet only for want of time, it is looked at again when that time is up.
+     * [talking] follows.
+     */
+    private fun show() {
+        showTimer?.invoke(); showTimer = null
+        // Only the word heard on this connection counts (it is forgotten as each one is made),
+        // and only once its join is answered.
+        val says = answered
+        val since = port.now() - changedAt
+        val deaf = voiceShown(_deafened.value, says && serverSaysDeafened, since)
+        _shownDeafened.value = deaf
+        _shownMuted.value = deaf || voiceShown(_muted.value, says && serverSaysMuted, since)
+        _seenMuted.value = _shownMuted.value || _serverMuted.value || _suppressed.value
+        val waiting = (serverSaysMuted && !_muted.value) || (serverSaysDeafened && !_deafened.value)
+        if (says && waiting && since < SERVER_WORD_MS) {
+            showTimer = port.later(SERVER_WORD_MS - since) { showTimer = null; show() }
+        }
+        publishTalking()
+    }
+
+    /** The sessions the server says are heard now. */
+    private fun hear(sessions: Set<Long>) {
+        heard = sessions
+        publishTalking()
+    }
+
+    private fun publishTalking() {
+        val own = _seat.value?.session
+        _talking.value = when {
+            _linkDown.value -> emptySet()
+            own != null && _seenMuted.value && own in heard -> heard - own
+            else -> heard
+        }
+    }
+
     private fun tell() {
         stateTimer?.invoke(); stateTimer = null
         told = _muted.value to _deafened.value
         port.sendState(attempt, _muted.value, _deafened.value)
     }
 
-    /** A choice or a hold changed: what holds now, applied, and told to the server once it has the session. */
-    private fun changed() {
+    /**
+     * A choice or a hold changed: what holds now, applied, shown, and told to the server once it
+     * has the session. A tap ([tapped]) made while what was shown was the server's word, not what
+     * holds, is told even when it changes nothing that holds: the server is asked again. Any
+     * other tap that changes nothing that holds asks the server for nothing.
+     */
+    private fun changed(tapped: Boolean = false) {
+        val before = _muted.value to _deafened.value
+        val stale = _shownMuted.value != _muted.value || _shownDeafened.value != _deafened.value
         derive()
+        if (tapped || before != (_muted.value to _deafened.value)) changedAt = port.now()
+        show()
         if (!active) return
         applyAudio()
-        if (answered && told != (_muted.value to _deafened.value)) tell()
+        if (answered && ((tapped && stale) || told != (_muted.value to _deafened.value))) tell()
     }
 
     companion object {
@@ -506,8 +673,18 @@ internal class VoiceCore(private val port: VoicePort, refusedForGood: Boolean = 
         const val DROP_MS = 5_000L
         /** A join not connected in this long is tried again. */
         const val CONNECT_MS = 25_000L
+        /** How long a change of mute or deafen, or a join, shows as asked before the voice server's word is shown instead. */
+        const val SERVER_WORD_MS = 2_000L
     }
 }
+
+/**
+ * Whether this phone is shown muted (or deafened): when the person wants it ([wanted]), or when the
+ * voice server says so ([serverSays]) and [sinceChangeMs] (since what is wanted last changed, the
+ * person last tapped, or the join was answered) is [VoiceCore.SERVER_WORD_MS] or more.
+ */
+internal fun voiceShown(wanted: Boolean, serverSays: Boolean, sinceChangeMs: Long): Boolean =
+    wanted || (serverSays && sinceChangeMs >= VoiceCore.SERVER_WORD_MS)
 
 /**
  * Tells the server the newest mute and deafen state, one request at a time, so that two quick
@@ -522,24 +699,51 @@ internal class VoiceStateSender(
     private val done: (attempt: Int, refusal: VoiceRefusal?) -> Unit,
 ) {
     private var wanted: Pair<Boolean, Boolean>? = null
+    /** Counts the sends: the same state sent again while a request is out goes again after it. */
+    private var sends = 0L
     private var attempt = 0
     private var job: Job? = null
 
     /** Sends [muted] and [deafened] on the connection of [attempt], after the request out now, if any. */
     fun send(attempt: Int, muted: Boolean, deafened: Boolean) {
         wanted = muted to deafened
+        sends++
         this.attempt = attempt
         if (job?.isActive == true) return
         job = scope.launch {
             while (true) {
                 val w = wanted ?: break
+                val n = sends
                 val on = this@VoiceStateSender.attempt
                 val refusal = post(w.first, w.second)
-                if (wanted != w || this@VoiceStateSender.attempt != on) continue
+                if (sends != n || this@VoiceStateSender.attempt != on) continue
                 done(on, refusal)
                 break
             }
         }
+    }
+
+    /**
+     * Before a new join: forgets what was wanted (the join carries the newest), and waits for the
+     * request out now, if any, to be answered, so that it reaches the server before the join
+     * does. Nothing of it is heard. A request still not answered after [limitMs] is given up: its
+     * coroutine is cancelled, which cancels it on the wire (over HTTP/2 that ends the request, not
+     * the connection), the join goes, and the new connection's states never wait behind it. One already on its way may still reach the server
+     * after the join, and the voice server's word then shows it.
+     */
+    suspend fun settle(limitMs: Long = SETTLE_MS) {
+        wanted = null
+        sends++
+        val out = job ?: return
+        if (withTimeoutOrNull(limitMs) { out.join() } == null) {
+            out.cancel()
+            if (job === out) job = null
+        }
+    }
+
+    companion object {
+        /** The longest a join waits for a state request of an earlier connection (one answers in moments). */
+        const val SETTLE_MS = 2_000L
     }
 
     /** Forgets what was wanted, and stops the request out now. */

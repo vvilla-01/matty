@@ -327,7 +327,18 @@ fun PluginsScreen(
     val server by repo.webappPlugins.collectAsState()
     val active by ctx.container.plugins.active.collectAsState()
     var commands by remember { mutableStateOf<List<SlashCommand>?>(null) }
+    // The install whose question is open (a plugin's newer release: see MattyPlugin.update).
+    var asking by remember { mutableStateOf<ceo.villa.matty.plugins.PluginInstall?>(null) }
+    asking?.let { ask ->
+        ceo.villa.matty.ui.components.MattyDialog(ask.title, onDismiss = { asking = null }, icon = Icons.Outlined.Extension, actions = {
+            androidx.compose.material3.TextButton(onClick = { asking = null }) { Text("Cancel") }
+            androidx.compose.material3.TextButton(onClick = { asking = null; ask.start() }) { Text("Install") }
+        }) {
+            Text(ask.text, style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
+        }
+    }
     LaunchedEffect(Unit) {
+        ctx.container.plugins.active.value.forEach { it.onPluginsShown() }
         val teamId = repo.currentTeamId.value ?: repo.teams.value.firstOrNull()?.id
         commands = if (teamId == null) emptyList() else runCatching { repo.client.teamCommands(teamId) }.getOrDefault(emptyList())
     }
@@ -382,6 +393,23 @@ fun PluginsScreen(
                         style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
                     // Something to know before expecting it to work (the server's plugin is too old for this app).
                     native?.notice()?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.dnd, modifier = Modifier.padding(top = 4.dp)) }
+                    // A newer release of the server's plugin, for its admins: a tap opens its page,
+                    // and Install, when offered, asks first.
+                    native?.update()?.let { u ->
+                        val link = u.link
+                        val install = u.install
+                        Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(u.text, style = MaterialTheme.typography.bodySmall, color = if (link != null) c.accent else c.textSecondary,
+                                modifier = Modifier.weight(1f).then(
+                                    if (link != null) Modifier.clickable(role = androidx.compose.ui.semantics.Role.Button) { nav.openUrl(link) } else Modifier,
+                                ))
+                            if (install != null) {
+                                Spacer(Modifier.width(8.dp))
+                                androidx.compose.material3.TextButton(onClick = { asking = install }) { Text("Install") }
+                            }
+                        }
+                        u.trouble?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.dnd, modifier = Modifier.padding(top = 2.dp)) }
+                    }
                     // What the module found when it checked (a signed release; this app verified).
                     native?.checks()?.forEach { line ->
                         Text(line.text, style = MaterialTheme.typography.bodySmall, color = if (line.warning) c.dnd else c.textTertiary, modifier = Modifier.padding(top = 4.dp))

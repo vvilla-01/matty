@@ -38,10 +38,11 @@ data class VoiceMember(
  * who are somebody here show as that person.
  *
  * This phone's own [seat] is placed at once, from the join's answer and the server's word since,
- * before any snapshot has it, in the channel it is in now and as [muted] and [deafened] as it is
- * now: a snapshot is up to two seconds behind. Any other entry for the same session, or another
- * phone session of the same account (one voice session per account), is left out. [talking] are
- * the sessions being heard on this phone.
+ * before any snapshot has it, in the channel it is in now and as [muted] and [deafened] as the
+ * others hear it now (see [VoiceSession.seenMuted]): a snapshot is up to two seconds behind.
+ * Any other entry for the same session, or another phone session of the same account (one voice
+ * session per account), is left out. [talking] are the sessions being heard on this phone; this
+ * phone's own ring shows only while it is not [muted].
  *
  * Empty when the server is not connected to its voice server, or (before 4.3.0) names no channels.
  */
@@ -78,7 +79,8 @@ fun voiceRoomsOf(
             muted = muted || deafened,
             deaf = deafened,
             phone = true,
-            speaking = seat.session in talking,
+            // Shown muted, the ring never says this phone is heard.
+            speaking = seat.session in talking && !muted && !deafened,
             me = true,
         )
     }

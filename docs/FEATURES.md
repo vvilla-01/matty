@@ -49,7 +49,9 @@ ready).
 - Slack-style message attachments with working buttons and select menus
 - Discord-style message grouping, day dividers, a "NEW" divider, mention highlighting
 - Threads (collapsed reply threads) with participant faces, follow/unfollow, and inline reply
-  quotes when threads are off
+  quotes when threads are off. A thread follows its newest reply as a chat does: after you send
+  one it goes to it, and somebody else's is followed while you are at the newest end, not while
+  you have scrolled away
 - Typing indicators, edit, delete, pin, save, mark unread, quote, copy link. An edit the server
   refuses (a message older than its edit window, say) stays in the box with the reason shown, and
   Edit is greyed, with why, once a message is past that window
@@ -81,7 +83,11 @@ ready).
   means they're in voice (crossed out when muted; crossed headphones when deafened)
 - Profile sheets: everything at the top in one glance (handle, their local time and how far it
   is from yours, about, custom status), then Message / Mention; on your own, tap the camera to
-  change your picture, or edit your profile
+  change your picture, or edit your profile. The You page (the picture on the tab pill) has the
+  same top as your own profile sheet, banner included, no wider than the sheet; its banner is
+  looked at only while the page can be seen and stays in place while a screen opens over the page
+  or closes; a GIF holds still once that screen has covered it for a second, and plays again when
+  the page is back in view
 - Custom status with presets and "clear after", presence picker (incl. Invisible)
 - Expression picker: emoji with search, recents, categories and custom emoji; GIFs via Giphy
 - Colorful names, double-tap reactions, quick-reaction bar
@@ -91,7 +97,12 @@ ready).
   events, profile extras, LIVE badges, outgoing-message guards, deep links
 - Interactive dialogs (`open_dialog`) rendered natively; slash-command autocomplete (pick a command and it's in the box, slash and all);
   message-attachment actions
-- A Plugins hub showing what the server runs and how well Matty covers each one
+- A Plugins hub showing what the server runs and how well Matty covers each one. To a server's
+  system admins it also says when a newer Matty Plugin is out ("Matty Plugin 4.5.0 is available",
+  from Matty Plugin 4.4.0 while **Look for updates** is on), and a tap opens that release's page
+  on GitHub. When the server can take it, **Install** beside the line installs it, after asking:
+  Matty gets the bundle the plugin downloaded and checked, and uploads it to that same server, as
+  Plugin Management does on the web
 - **[Matty Plugin](https://github.com/vvilla-01/matty-plugin)**, Matty's companion on the server (id
   `ceo.villa.matty`), shown under the name that server gives it ("Matty" unless its admins chose
   another) on the Plugins screen, the panel's header button and title and the panel's sentences
@@ -107,13 +118,23 @@ ready).
   thumbs-up button, native clip and plan cards in chat (a clip pops out right over the chat), LIVE rings on streamers' avatars, a Mumble mic on the avatars of people in voice chat (in chat, the member list, DMs and profiles, beside their presence dot), what people are playing on Steam under their names in the member list and DMs, Discord-style ("Playing ELDEN RING", in place of the plugin's "Live now" badge while they stream it), with a Playing card on their profile, awards and trophies on
   profiles (crowns, monthly medals, Top Snooper, Best Clipper, biggest fans, achievement coins —
   the same record the web shows, with the plugin's own artwork), profile banners across the top
-  of a profile, three wide by one high (you drag and pinch to choose the part that shows: a still
+  of a profile and of your You page, three wide by one high (changed from either one: you drag
+  and pinch to choose the part that shows: a still
   picture is cut to it on the phone, and a GIF keeps playing with that part, kept by the
   plugin), voice channels (from Matty Plugin 4.3.0, through the plugin to the server's Mumble
   server, as Discord shows them: a Voice Channels category in each team's channel list with who
-  is in each channel and a green ring while they speak, a sheet to join a channel muted or not,
+  is in each channel (every channel, or those the server's admins list in **Channels to show**)
+  and a green ring while they speak, a sheet to join a channel muted or not,
   a voice screen with everybody as a tile and Mute, Deafen, the output and Leave, and a bar
-  while you browse elsewhere; join a channel and talk, muted or deafened, with the call going on with Matty minimised,
+  while you browse elsewhere; join a channel and talk, muted or deafened, with the call going on with Matty minimised
+  (with Matty Plugin 4.4.0, when the voice server holds you muted or deafened though you asked
+  otherwise, your buttons and your own row say so after two seconds, your ring stays off while
+  you are shown muted, and a tap asks again), your tile and microphone showing you muted, as the
+  others hear you, while the voice server's admins mute you, the server's own sentence on the
+  voice screen while a join it turned away for a while is waited out, voice joining again by
+  itself when the connection goes (at once when the phone loses its network or moves to another,
+  as from Wi-Fi to mobile data), with "Reconnecting…" and nobody shown talking while the
+  connection is down,
   a notification with Mute and Leave, the call's output on the speaker, the phone, a headset or
   Bluetooth, and Android's call audio with echo cancelling), and the composer guard that stops
   a bearer token being posted by mistake. Streams and clips play as media (speaker/headphones),
@@ -122,9 +143,10 @@ ready).
   meanwhile, and picks up again a moment after Matty is back), with a media notification to mute
   or stop it (and lets go by itself when the stream ends, dies, or has sat muted and unseen for
   five minutes). The app and
-  Matty Plugin are written to one contract and released as a pair (Matty 0.1.31 works with
-  Matty Plugin 4.0.0 or newer, and says so when it meets an older one; push notifications need
-  4.1.0, voice channels 4.3.0): who is live, in voice or
+  Matty Plugin are written to one contract and released as a pair (Matty 0.1.32 works with
+  Matty Plugin 4.4.0, and with every release from 4.0.0, and says so when it meets an older one;
+  push notifications need 4.1.0, voice channels 4.3.0, and the voice server's own mute, the
+  update line and a minimum Matty 4.4.0): who is live, in voice or
   wearing the plugin's badge is decided once, on the server, and the app asks only what changed.
   Links to clips and plans posted under the plugin's earlier id, `ceo.villa.villanet`, open as
   the new ones do
@@ -140,6 +162,14 @@ ready).
 **Everything else**
 - Sign in with password (+MFA), personal access token, or GitLab single sign-on
 - Multiple servers, switchable from the You tab
+- A server whose Matty Plugin (4.4.0 or newer) has a **Minimum Matty version** newer than this
+  one is closed behind an "Update Matty" page that cannot be dismissed: "<server> needs Matty
+  0.1.33 or newer. You have 0.1.32.", with **Get the update** (the newest release of this
+  repository), **Check again**, and the lock screen's ways to another server and to sign out. It is
+  remembered with the server, so it is there at the next start, and goes as soon as the server
+  takes this version (or Matty is updated). A voice call or a stream of that server ends. Its
+  notifications still arrive, and Reply and Mark as read on them still work. A server that also
+  asks for an unlock shows its lock first
 - Notifications with inline reply and mark-as-read, fed by UnifiedPush (end-to-end encrypted, with no connection kept open; needs Matty Plugin 4.1.0 on the server; Settings → Notifications says how it stands for the server on screen) or by the live WebSocket; replying from one doesn't make you show as online, and a thread's notification opens that thread, and its Mark as read marks the thread read up to the newest message it showed; with more than one server signed in, each notification says which server it is from
 - Share text, images and files into Matty from other apps
 - Tablet / foldable layout with all three panes side by side

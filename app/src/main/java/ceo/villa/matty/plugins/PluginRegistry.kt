@@ -38,6 +38,16 @@ class PluginPanel(
 data class PluginCheck(val text: String, val warning: Boolean)
 
 /**
+ * [MattyPlugin.update]'s line: [text], the page a tap opens ([link]; null when it is only shown),
+ * the install a button beside it offers ([install]; null for none), and why the last install
+ * failed ([trouble]), said under it.
+ */
+data class PluginUpdate(val text: String, val link: String?, val install: PluginInstall? = null, val trouble: String? = null)
+
+/** An install [PluginUpdate] offers: the question a tap asks first ([title], [text]), and what Install then starts. */
+class PluginInstall(val title: String, val text: String, val start: () -> Unit)
+
+/**
  * A native Matty integration for a Mattermost server plugin.
  *
  * Mattermost's own mobile app cannot run web plugins, so plugin features simply disappear on
@@ -99,6 +109,17 @@ interface MattyPlugin {
     @Composable
     fun checks(): List<PluginCheck> = emptyList()
 
+    /**
+     * A newer release of the server's plugin, for the Plugins screen, said to the server's system
+     * admins only (the Matty plugin: when the server looks for releases), and while an install of
+     * it runs, where that stands. Null when there is none to tell.
+     */
+    @Composable
+    fun update(): PluginUpdate? = null
+
+    /** Called when the Plugins screen opens: a module reads again what its [update] line says. */
+    fun onPluginsShown() {}
+
     /** Called when a server with this plugin becomes active. */
     fun onAttach(repo: ChatRepository) {}
     fun onDetach() {}
@@ -121,22 +142,34 @@ interface MattyPlugin {
     fun person(userId: String): PersonFacts? = null
 
     /**
-     * Drawn over the coloured band across the top of a user's profile sheet, filling [modifier]'s
-     * bounds, which are three wide by one high on every screen (VillaNET: the person's banner, the
-     * part of it they chose, and on your own a way to change it). The band shows wherever this
-     * draws nothing.
+     * Drawn over the coloured band across the top of a user's profile sheet, and of your own on
+     * the You page, filling [modifier]'s bounds, which are three wide by one high on every screen
+     * (VillaNET: the person's banner, the part of it they chose, and on your own a way to change
+     * it). The band shows wherever this draws nothing. [inView]: whether it can be seen now. The
+     * sheet always can be while it is open; the You page can only while it is the tab shown, with
+     * no full-screen view over it and the app in front.
      */
     @Composable
-    fun ProfileBanner(userId: String, host: PluginHost, modifier: Modifier) {}
+    fun ProfileBanner(userId: String, host: PluginHost, modifier: Modifier, inView: Boolean) {}
 
     /**
      * What a module keeps for as long as a user's profile sheet is open, composed outside the
      * sheet, after it (VillaNET: the crop screen for one's banner, a window of its own over the
      * sheet). Not inside it: Material builds the sheet's window, and all composed in it, afresh
-     * when the screen's density changes, and what was held there went.
+     * when the screen's density changes, and what was held there went. The You page keeps it for
+     * your own for as long as the page is composed (under a full-screen view too), except while
+     * your own profile sheet is open over it.
      */
     @Composable
     fun ProfileOver(userId: String, host: PluginHost) {}
+
+    /**
+     * A line under your name on the You page about the banner drawn there by [ProfileBanner], or
+     * nothing (VillaNET: why the last change to it failed). It brings its own space above it. The
+     * profile sheet says the same among its [ProfileExtras].
+     */
+    @Composable
+    fun ProfileBannerNote(userId: String, host: PluginHost) {}
 
     /** Extra rows on a user's profile sheet (e.g. "Live now — Watch"). */
     @Composable

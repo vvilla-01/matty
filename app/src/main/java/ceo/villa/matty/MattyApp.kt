@@ -58,6 +58,8 @@ class MattyApp : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         container = AppContainer(this)
         container.migrate()
+        // A plugin bundle left by an app that was stopped in the middle of an install: no install runs yet.
+        container.appScope.launch(Dispatchers.IO) { runCatching { ceo.villa.matty.plugins.villanet.removeLeftUpdates(cacheDir) } }
         // Push: what a distributor hands the app is carried out here; a server that goes takes
         // its registrations with it.
         ceo.villa.matty.push.PushReceiver.sink = container.push
@@ -263,6 +265,7 @@ class AppContainer(val app: Application) {
         runCatching { imageLoader.diskCache?.clear() }
         runCatching { imageHttpCache.evictAll() }
         runCatching { File(app.cacheDir, "shared").deleteRecursively() }
+        runCatching { ceo.villa.matty.plugins.villanet.removeLeftUpdates(app.cacheDir) }
         devicePrefs.edit().remove("wipe_pending").apply()
     }
 
@@ -480,11 +483,14 @@ class SessionManager(private val c: AppContainer) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + NeverCrash)
         val client = clientFor(server.url, token)
         val socket = MattermostSocket(client, c.baseHttp, scope)
-        // What the server last required, as saved: [server] may be a copy from before that changed.
-        val remembered = c.sessionStore.servers.value.firstOrNull { it.id == server.id }?.policy ?: server.policy
+        // What the server last required, as saved: [server] may be a copy from before that changed
+        // (a need saved as gone stays gone).
+        val saved = c.sessionStore.servers.value.firstOrNull { it.id == server.id }
+        val remembered = saved?.policy ?: server.policy
         val repo = ChatRepository(
-            server.copy(policy = remembered), client, socket, c.settings, scope, c.chatCache(server.id), c.nameColorStore(server.id),
+            server.copy(policy = remembered, appNeed = if (saved != null) saved.appNeed else server.appNeed), client, socket, c.settings, scope, c.chatCache(server.id), c.nameColorStore(server.id),
             rememberPolicy = { policy -> c.sessionStore.rememberPolicy(server.id, policy) },
+            rememberAppNeed = { need -> c.sessionStore.rememberAppNeed(server.id, need) },
             unlockDue = { ceo.villa.matty.ui.lock.AppLock.book.isLocked(server.id, ceo.villa.matty.ui.lock.AppLock.now()) },
         )
         client.onUnauthorized = { c.appScope.launch { confirmSessionEnded(repo) } }

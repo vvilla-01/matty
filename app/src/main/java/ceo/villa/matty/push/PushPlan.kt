@@ -251,7 +251,8 @@ object PushPlan {
     /**
      * What a push route's refusal [e] leaves of [side] (a session over and a key the server
      * replaced are dealt with before): push switched off there is remembered with its sentence;
-     * the app check keeps its sentence and is [owe]d; an [endpoint] refused for good (400) keeps
+     * the app check, and a server that takes no Matty this old, keep their sentence and are
+     * [owe]d; an [endpoint] refused for good (400) keeps
      * the server's sentence and is not sent again; anything else (no network, a limit, a 404 while
      * the plugin is not running, a key that could not be replaced) is [owe]d.
      */
@@ -260,7 +261,7 @@ object PushPlan {
         return when {
             v?.code == VillaNetApi.PUSH_UNAVAILABLE -> side.copy(offer = PushSide.OFFER_OFF, reason = v.serverMessage.orEmpty())
             v?.code == VillaNetApi.PUSH_KEY -> owe(side)
-            v?.code == VillaNetApi.APP_UNVERIFIED -> owe(side).copy(refusal = v.serverMessage.orEmpty())
+            v?.code == VillaNetApi.APP_UNVERIFIED || v?.code == VillaNetApi.APP_OUTDATED -> owe(side).copy(refusal = v.serverMessage.orEmpty())
             endpoint != null && v?.status == 400 -> side.copy(refusal = v.serverMessage?.trim().orEmpty().ifEmpty { REJECTED }, rejected = endpoint, owesPut = false)
             else -> owe(side)
         }

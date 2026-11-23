@@ -34,8 +34,18 @@ enum class MicPermission { Granted, NotAsked, Declined, Refused }
 internal sealed interface VoiceMessage {
     /** The sessions being heard on this phone right now, and this phone's own while its voice goes out. */
     data class Talking(val sessions: Set<Long>) : VoiceMessage
-    /** This session's channel, whether the voice server muted it, and whether it may not speak in that channel. */
-    data class Self(val channel: Int, val muted: Boolean, val suppressed: Boolean) : VoiceMessage
+    /**
+     * This session's channel, whether the voice server's admin muted it ([muted]), whether it may
+     * not speak in that channel ([suppressed]), and the voice server's own word on the session's
+     * self mute and self deafen ([selfMuted], [selfDeafened]; false from a plugin that doesn't say).
+     */
+    data class Self(
+        val channel: Int,
+        val muted: Boolean,
+        val suppressed: Boolean,
+        val selfMuted: Boolean = false,
+        val selfDeafened: Boolean = false,
+    ) : VoiceMessage
     /** The session is over: [code] is kicked, banned, mumble, replaced, off or session. */
     data class End(val code: String, val reason: String) : VoiceMessage
 }
@@ -45,7 +55,7 @@ internal fun voiceMessageOf(text: String): VoiceMessage? {
     val s = runCatching { MattermostJson.decodeFromString(VnVoiceSignal.serializer(), text) }.getOrNull() ?: return null
     return when {
         s.end != null -> VoiceMessage.End(s.end, s.reason.trim())
-        s.self != null -> VoiceMessage.Self(s.self.channel, s.self.muted, s.self.suppressed)
+        s.self != null -> VoiceMessage.Self(s.self.channel, s.self.muted, s.self.suppressed, s.self.selfMuted, s.self.selfDeafened)
         s.talking != null -> VoiceMessage.Talking(s.talking.toSet())
         else -> null
     }
@@ -69,8 +79,12 @@ internal fun endSentence(code: String, reason: String): String = reason.ifBlank 
 /** What a refused join or move means: wait and try again, or stop. */
 internal enum class VoiceRetry { Wait, Stop }
 
-/** A refusal, or no answer at all: whether to [retry], the [sentence] to show, and the least wait the server asked for. */
-internal data class VoiceRefusal(val retry: VoiceRetry, val sentence: String, val waitMs: Long = 0)
+/**
+ * A refusal, or no answer at all: whether to [retry], the [sentence] to show, and the least wait
+ * the server asked for. [serverSaid]: a refusal to wait out (429, or 503) whose sentence is the
+ * server's own, not the app's.
+ */
+internal data class VoiceRefusal(val retry: VoiceRetry, val sentence: String, val waitMs: Long = 0, val serverSaid: Boolean = false)
 
 /** The plugin's own code for a channel that does not exist. */
 internal const val VOICE_NOT_FOUND = "not_found"
@@ -89,7 +103,10 @@ internal fun voiceRefusalOf(status: Int?, sentence: String?, retryAfterMs: Long,
     return when {
         status == null -> VoiceRefusal(VoiceRetry.Wait, VillaNetApi.notAnswering(name))
         status == 404 && code != VOICE_NOT_FOUND -> VoiceRefusal(VoiceRetry.Wait, VillaNetApi.notAnswering(name))
-        status == 429 || status == 503 || status >= 500 -> VoiceRefusal(VoiceRetry.Wait, said.ifEmpty { VillaNetApi.notAnswering(name) }, retryAfterMs.coerceAtLeast(0))
+        status == 429 || status == 503 || status >= 500 -> VoiceRefusal(
+            VoiceRetry.Wait, said.ifEmpty { VillaNetApi.notAnswering(name) }, retryAfterMs.coerceAtLeast(0),
+            serverSaid = (status == 429 || status == 503) && said.isNotEmpty(),
+        )
         else -> VoiceRefusal(VoiceRetry.Stop, said.ifEmpty { "Couldn't join voice ($status)." })
     }
 }

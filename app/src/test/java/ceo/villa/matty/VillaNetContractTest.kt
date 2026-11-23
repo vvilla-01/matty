@@ -1,6 +1,9 @@
 package ceo.villa.matty
 
 import ceo.villa.matty.data.api.MattermostJson
+import ceo.villa.matty.data.session.AppNeed
+import ceo.villa.matty.data.session.AppNeedKeeper
+import ceo.villa.matty.data.session.minimumInRefusal
 import ceo.villa.matty.plugins.PersonFacts
 import ceo.villa.matty.plugins.UserActivity
 import ceo.villa.matty.plugins.VoiceState
@@ -24,6 +27,13 @@ import ceo.villa.matty.plugins.villanet.VnError
 import ceo.villa.matty.plugins.villanet.VnPersonFacts
 import ceo.villa.matty.plugins.villanet.VnSnapshot
 import ceo.villa.matty.plugins.villanet.VnStream
+import ceo.villa.matty.plugins.villanet.VnVoiceSignal
+import ceo.villa.matty.plugins.villanet.VILLANET_ID
+import ceo.villa.matty.plugins.villanet.VoiceMessage
+import ceo.villa.matty.plugins.villanet.pluginReleasePageOf
+import ceo.villa.matty.plugins.villanet.pluginUpdateOf
+import ceo.villa.matty.plugins.villanet.voiceMessageOf
+import ceo.villa.matty.plugins.villanet.voiceRoomsOf
 import ceo.villa.matty.plugins.villanet.PRODUCT_NAME
 import ceo.villa.matty.plugins.villanet.PUSH_SINCE
 import ceo.villa.matty.plugins.villanet.VnPushState
@@ -62,7 +72,8 @@ import java.io.File
  * screen; and, with the plugin's checkout beside Matty's, fail while the two copies differ.
  *
  * (me-linked.json and me-locked.json are the plugin's `/me`, which its web panel reads. The app
- * never does: its stream key and panel settings are none of the app's business.)
+ * never does: its stream key and panel settings are none of the app's business. Nor does it read
+ * admin-*.json, the System Console cards' own routes.)
  */
 class VillaNetContractTest {
     private fun fixture(name: String): String =
@@ -454,6 +465,71 @@ class VillaNetContractTest {
         assertTrue(olderThan("latest", VnAccess.SINCE))
     }
 
+    @Test
+    fun accessSaysTheOldestMattyTheServerTakes() {
+        val a = decoded("access-app-minimum.json", VnAccess.serializer())
+        assertEquals("0.1.32", a.app?.minimum)
+        // An older Matty is closed by it, with the minimum it names; this one is not.
+        val older = AppNeedKeeper(null, "0.1.31")
+        older.answered(older.asking(), a.app?.minimum, VILLANET_ID)
+        assertEquals(AppNeed("0.1.32", "0.1.31", VILLANET_ID), older.need.value)
+        val same = AppNeedKeeper(null, "0.1.32")
+        same.answered(same.asking(), a.app?.minimum, VILLANET_ID)
+        assertNull(same.need.value)
+        // Without a minimum set, the key is not there.
+        assertEquals("", decoded("access.json", VnAccess.serializer()).app?.minimum)
+    }
+
+    @Test
+    fun aMattyOlderThanTheMinimumIsRefusedWithTheMinimumInTheSentence() {
+        val refused = decoded("refusal-app-outdated.json", VnError.serializer())
+        assertEquals(VillaNetApi.APP_OUTDATED, refused.code)
+        // The app reads the minimum from the sentence: "needs Matty <minimum> or newer".
+        assertEquals("0.1.32", minimumInRefusal(refused.error))
+        val k = AppNeedKeeper(null, "0.1.31")
+        k.refused(refused.error, VILLANET_ID)
+        assertEquals(AppNeed("0.1.32", "0.1.31", VILLANET_ID), k.need.value)
+    }
+
+    @Test
+    fun accessTellsASystemAdminOfANewerPluginAndWhetherItCanBeInstalled() {
+        val a = decoded("access-update.json", VnAccess.serializer())
+        val update = a.update!!
+        assertEquals("4.10.0", update.version)
+        assertEquals(pluginReleasePageOf("4.10.0"), update.url)
+        assertTrue(update.install)
+        // Install needs a signed release of the plugin.
+        assertEquals("signed", a.release?.state)
+        // The line the app draws for it: the page the app builds, and Install.
+        val offer = pluginUpdateOf(update, "4.9.0", admin = true)!!
+        assertEquals("4.10.0", offer.version)
+        assertEquals(pluginReleasePageOf("4.10.0"), offer.link)
+        assertTrue(offer.install)
+        assertNull("nothing for a person who is not a system admin", pluginUpdateOf(update, "4.9.0", admin = false))
+        assertNull("nor on an answer without it", decoded("access.json", VnAccess.serializer()).update)
+    }
+
+    @Test
+    fun theVoiceServersOwnWordOnTheSessionIsReadAsSent() {
+        val signal = decoded("voice-signal-self.json", VnVoiceSignal.serializer())
+        assertTrue(signal.self!!.selfMuted)
+        assertEquals(
+            VoiceMessage.Self(channel = 2, muted = false, suppressed = false, selfMuted = true, selfDeafened = false),
+            voiceMessageOf(fixture("voice-signal-self.json")),
+        )
+    }
+
+    @Test
+    fun aTreeOfTheChannelsShownStartsWhereTheShownChannelsStart() {
+        val s = decoded("voice-shown.json", VnSnapshot.serializer())
+        // Gaming and Lobby are shown, the root is not: both have no parent and depth 0.
+        val rooms = voiceRoomsOf(s.voice, { null })
+        assertEquals(listOf(Triple("Gaming", 0, 2), Triple("Duo", 1, 4), Triple("Lobby", 0, 1)), rooms.map { Triple(it.name, it.depth, it.id) })
+        assertEquals(listOf(listOf(12L), listOf(5L), listOf(3L)), rooms.map { r -> r.people.map { it.session } })
+        assertEquals(2, rooms[1].max)
+        assertTrue(rooms[0].people.single().phone)
+    }
+
     // ---- decoding with no surprises -----------------------------------------------------------
 
     /** What the server sends that the app deliberately has no place for, and why. */
@@ -492,6 +568,12 @@ class VillaNetContractTest {
                 "artwork" to "whether the server has an emblem and a No Signal ghost: the app draws neither (it shows the icon, which always exists)",
             ),
             "access-push-on.json" to mapOf(
+                "artwork" to "whether the server has an emblem and a No Signal ghost: the app draws neither (it shows the icon, which always exists)",
+            ),
+            "access-app-minimum.json" to mapOf(
+                "artwork" to "whether the server has an emblem and a No Signal ghost: the app draws neither (it shows the icon, which always exists)",
+            ),
+            "access-update.json" to mapOf(
                 "artwork" to "whether the server has an emblem and a No Signal ghost: the app draws neither (it shows the icon, which always exists)",
             ),
             "unlink.json" to mapOf("streamKey" to "the reader's stream name: the app has no use for it, and a secret that isn't in memory can't leak"),

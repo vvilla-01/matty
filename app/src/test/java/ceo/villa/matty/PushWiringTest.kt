@@ -265,8 +265,9 @@ class PushWiringTest {
         assertTrue("store.enabled && PushPlan.owesSend(store.side(serverId))" in decide)
         assertTrue("?.takeIf { owed }" in decide)
         assertTrue("?: return@launch" in decide)
-        // The app check's refusal starts none: it is paid once the check passes.
-        assertTrue("if (PushPlan.owesSend(side) && v?.code != VillaNetApi.APP_UNVERIFIED) payLater(serverId, v?.retryAfterMs ?: 0)" in refused)
+        // The app check's refusal starts none: it is paid once the check passes. Nor does an app
+        // older than the server takes: it is paid as soon as the server opens to it again.
+        assertTrue("if (PushPlan.owesSend(side) && v?.code != VillaNetApi.APP_UNVERIFIED && v?.code != VillaNetApi.APP_OUTDATED) payLater(serverId, v?.retryAfterMs ?: 0)" in refused)
     }
 
     @Test fun tryAgainSendsARefusedAddressOnceMore() {

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -64,6 +66,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.sp
@@ -74,6 +77,8 @@ import ceo.villa.matty.BuildConfig
 import ceo.villa.matty.container
 import ceo.villa.matty.data.api.User
 import ceo.villa.matty.data.emoji.EmojiStore
+import ceo.villa.matty.plugins.MattyPlugin
+import androidx.compose.ui.unit.Dp
 import ceo.villa.matty.ui.HomeTab
 import ceo.villa.matty.ui.LocalActions
 import ceo.villa.matty.ui.LocalRepo
@@ -109,6 +114,33 @@ private fun Banner(userId: String, height: androidx.compose.ui.unit.Dp = 110.dp)
     val c = Matty.colors
     val base = nameColor(userId, true)
     Box(Modifier.fillMaxWidth().height(height).background(Brush.linearGradient(listOf(base.copy(alpha = 0.85f), base.copy(alpha = 0.35f), c.card))))
+}
+
+/**
+ * The band across the top of a profile, and over it what a plugin draws there (VillaNET: the
+ * person's banner, and on your own the button that changes it), [bannerBandHeight] high. Then
+ * [picture], which is placed [pictureTop] down, over the band's foot. The profile sheet and the
+ * You page both draw their top with this. [inView]: whether it can be seen now (see [youPageInView]).
+ */
+@Composable
+private fun ProfileBand(userId: String, nav: Navigator, plugins: List<MattyPlugin>, inView: Boolean, picture: @Composable (top: Dp) -> Unit) {
+    androidx.compose.foundation.layout.BoxWithConstraints {
+        val bannerHeight = bannerBandHeight(maxWidth)
+        Box(Modifier.fillMaxWidth().height(bannerHeight)) {
+            Banner(userId, bannerHeight)
+            plugins.forEach { p -> androidx.compose.runtime.key(p.id) { p.ProfileBanner(userId, nav, Modifier.fillMaxSize(), inView) } }
+        }
+        picture(pictureTop(bannerHeight))
+    }
+}
+
+/**
+ * What plugins keep for as long as the profile [userId] is shown, composed after it and outside
+ * any sheet (VillaNET: the crop screen for one's banner).
+ */
+@Composable
+private fun ProfileOvers(userId: String, nav: Navigator, plugins: List<MattyPlugin>) {
+    plugins.forEach { p -> androidx.compose.runtime.key(p.id) { p.ProfileOver(userId, nav) } }
 }
 
 /** Picks a photo and makes it your profile picture (from the You tab and your own profile sheet). */
@@ -205,17 +237,11 @@ fun ProfileSheet(nav: Navigator, userId: String, onDismiss: () -> Unit) {
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
         // Scrolls: a VillaNET regular's awards can run longer than the screen.
         Column(Modifier.sheetVerticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
-            androidx.compose.foundation.layout.BoxWithConstraints {
-                // The coloured band, and over it what a plugin draws there (VillaNET: their banner).
-                // Three wide by one high on every screen, the shape a banner's part is chosen in,
-                // so the part somebody chose is exactly the part that shows.
-                val bannerHeight = maxWidth / 3
-                Box(Modifier.fillMaxWidth().height(bannerHeight)) {
-                    Banner(userId, bannerHeight)
-                    plugins.forEach { p -> androidx.compose.runtime.key(p.id) { p.ProfileBanner(userId, nav, Modifier.fillMaxSize()) } }
-                }
+            // The coloured band, and over it what a plugin draws there (VillaNET: their banner).
+            // Seen while it is open: it steps aside when a full-screen view opens.
+            ProfileBand(userId, nav, plugins, inView = true) { top ->
                 // The picture overlaps the banner's foot by as much as it always has.
-                Box(Modifier.padding(start = 16.dp, top = bannerHeight - 48.dp)) {
+                Box(Modifier.padding(start = 16.dp, top = top)) {
                     val st = statuses[userId] ?: "offline"
                     Box(
                         Modifier.background(c.card, CircleShape)
@@ -301,7 +327,7 @@ fun ProfileSheet(nav: Navigator, userId: String, onDismiss: () -> Unit) {
     }
     // After the sheet: a window a plugin opens over it stays above it when a density change
     // builds both afresh, in this order.
-    plugins.forEach { p -> androidx.compose.runtime.key(p.id) { p.ProfileOver(userId, nav) } }
+    ProfileOvers(userId, nav, plugins)
 }
 
 /**
@@ -380,76 +406,92 @@ fun YouScreen(nav: Navigator) {
     val servers by container.sessionStore.servers.collectAsState()
     var statusDialog by remember { mutableStateOf(false) }
     val avatarVersion by repo.avatarVersion.collectAsState()
+    val plugins by container.plugins.active.collectAsState()
     val pickAvatar = rememberAvatarPicker()
+    val lifecycle by androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     val u = me ?: return
     val myStatus = statuses[u.id] ?: "online"
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(bottom = 120.dp + ceo.villa.matty.ui.BottomChrome.barSpace)) {
-        Box(Modifier.padding(16.dp).clip(Matty.CardShape).background(c.card)) {
-            Column {
-                Box {
-                    Banner(u.id, 96.dp)
-                    Box(Modifier.padding(start = 16.dp, top = 46.dp)) {
-                        Box(Modifier.background(c.card, CircleShape).circleClick(50.dp, "Change picture", pickAvatar).padding(6.dp)) {
-                            Avatar(repo.client.avatarUrl(u.id, maxOf(u.lastPictureUpdate, avatarVersion)), repo.nameOf(u), 88.dp, status = myStatus, ringColor = c.card)
+    // Your banner counts as looked at only while this page can be seen; an animated one plays only then, and a moment after.
+    val inView = youPageInView(nav.tab == HomeTab.You, nav.stack.size, lifecycle.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED))
+    // The page scrolls whole; its column is no wider than the profile sheet, and centred, so the
+    // band is never wider than the sheet's.
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(bottom = 120.dp + ceo.villa.matty.ui.BottomChrome.barSpace),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Column(Modifier.widthIn(max = BottomSheetDefaults.SheetMaxWidth).fillMaxWidth()) {
+            Box(Modifier.padding(16.dp).clip(Matty.CardShape).background(c.card)) {
+                Column {
+                    // Your banner, as your profile sheet shows it, with the button that changes it.
+                    ProfileBand(u.id, nav, plugins, inView) { top ->
+                        Box(Modifier.padding(start = 16.dp, top = top)) {
+                            Box(Modifier.background(c.card, CircleShape).circleClick(50.dp, "Change picture", pickAvatar).padding(6.dp)) {
+                                Avatar(repo.client.avatarUrl(u.id, maxOf(u.lastPictureUpdate, avatarVersion)), repo.nameOf(u), 88.dp, status = myStatus, ringColor = c.card)
+                            }
+                            CameraBadge(Modifier.align(Alignment.TopEnd).padding(top = 4.dp), onClick = pickAvatar)
                         }
-                        CameraBadge(Modifier.align(Alignment.TopEnd).padding(top = 4.dp), onClick = pickAvatar)
                     }
-                }
-                Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp, top = 8.dp)) {
-                    Text(repo.nameOf(u), style = MaterialTheme.typography.headlineSmall, color = c.title, fontWeight = FontWeight.SemiBold)
-                    Text("@${u.username} · ${repo.siteName}", style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.pill).clickable { statusDialog = true }.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        val cs = u.customStatus
-                        if (cs?.emoji?.isNotBlank() == true) EmojiGlyph(cs.emoji, 20.dp) else Icon(Icons.Outlined.EmojiEmotions, null, tint = c.textSecondary)
-                        Spacer(Modifier.width(10.dp))
-                        Text(cs?.text?.ifBlank { null } ?: "Set a custom status", color = if (cs != null) c.text else c.textSecondary, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                        if (cs != null) Icon(Icons.Outlined.Close, "Clear status", tint = c.textSecondary, modifier = Modifier.size(20.dp).clickable {
-                            repo.launchAction("Couldn't clear your status") { repo.clearCustomStatus() }
-                        })
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("online", "away", "dnd", "offline").forEach { st ->
-                            ChipPill(if (st == "offline") "Invisible" else statusLabel(st), selected = myStatus == st,
-                                leading = { Box(Modifier.size(10.dp).background(statusColor(st), CircleShape)) }) {
-                                repo.launchAction("Couldn't change your status") { repo.setMyStatus(st) }
+                    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp, top = 8.dp)) {
+                        Text(repo.nameOf(u), style = MaterialTheme.typography.headlineSmall, color = c.title, fontWeight = FontWeight.SemiBold)
+                        Text("@${u.username} · ${repo.siteName}", style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
+                        // Why the last change to your banner failed, when it did.
+                        plugins.forEach { p -> androidx.compose.runtime.key(p.id) { p.ProfileBannerNote(u.id, nav) } }
+                        Spacer(Modifier.height(12.dp))
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.pill).clickable { statusDialog = true }.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val cs = u.customStatus
+                            if (cs?.emoji?.isNotBlank() == true) EmojiGlyph(cs.emoji, 20.dp) else Icon(Icons.Outlined.EmojiEmotions, null, tint = c.textSecondary)
+                            Spacer(Modifier.width(10.dp))
+                            Text(cs?.text?.ifBlank { null } ?: "Set a custom status", color = if (cs != null) c.text else c.textSecondary, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                            if (cs != null) Icon(Icons.Outlined.Close, "Clear status", tint = c.textSecondary, modifier = Modifier.size(20.dp).clickable {
+                                repo.launchAction("Couldn't clear your status") { repo.clearCustomStatus() }
+                            })
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("online", "away", "dnd", "offline").forEach { st ->
+                                ChipPill(if (st == "offline") "Invisible" else statusLabel(st), selected = myStatus == st,
+                                    leading = { Box(Modifier.size(10.dp).background(statusColor(st), CircleShape)) }) {
+                                    repo.launchAction("Couldn't change your status") { repo.setMyStatus(st) }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            MattyCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
-                ActionRow(Icons.Outlined.Edit, "Edit profile") { nav.push(Route.EditProfile) }
-                ActionRow(Icons.Outlined.Bookmark, "Saved messages") { nav.tab = HomeTab.Activity }
-                ActionRow(Icons.Outlined.Settings, "Settings", "Appearance, chat, notifications, GIFs") { nav.push(Route.Settings) }
-                ActionRow(Icons.Outlined.Extension, "Plugins", "What your server runs, and how Matty supports it") { nav.push(Route.Plugins) }
-            }
-            SectionLabel("Servers")
-            MattyCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
-                servers.forEach { s ->
-                    ActionRow(Icons.Outlined.Dns, s.name, "@${s.username} · ${s.url.removePrefix("https://")}",
-                        trailing = { if (s.id == repo.server.id) Icon(Icons.Outlined.Check, "Active", tint = c.accent) }) {
-                        container.sessions.switchTo(s.id)
+            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                MattyCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
+                    ActionRow(Icons.Outlined.Edit, "Edit profile") { nav.push(Route.EditProfile) }
+                    ActionRow(Icons.Outlined.Bookmark, "Saved messages") { nav.tab = HomeTab.Activity }
+                    ActionRow(Icons.Outlined.Settings, "Settings", "Appearance, chat, notifications, GIFs") { nav.push(Route.Settings) }
+                    ActionRow(Icons.Outlined.Extension, "Plugins", "What your server runs, and how Matty supports it") { nav.push(Route.Plugins) }
+                }
+                SectionLabel("Servers")
+                MattyCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
+                    servers.forEach { s ->
+                        ActionRow(Icons.Outlined.Dns, s.name, "@${s.username} · ${s.url.removePrefix("https://")}",
+                            trailing = { if (s.id == repo.server.id) Icon(Icons.Outlined.Check, "Active", tint = c.accent) }) {
+                            container.sessions.switchTo(s.id)
+                        }
                     }
+                    ActionRow(Icons.Outlined.Add, "Add a server") { nav.push(Route.AddServer) }
+                    ActionRow(Icons.AutoMirrored.Outlined.Logout, "Sign out of ${repo.siteName}", tint = c.destructive) { container.sessions.signOut() }
                 }
-                ActionRow(Icons.Outlined.Add, "Add a server") { nav.push(Route.AddServer) }
-                ActionRow(Icons.AutoMirrored.Outlined.Logout, "Sign out of ${repo.siteName}", tint = c.destructive) { container.sessions.signOut() }
-            }
-            MattyCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
-                ActionRow(Icons.Outlined.Code, "Matty ${BuildConfig.VERSION_NAME}", "Connected to Mattermost ${repo.config.value["Version"].orEmpty()}") {
-                    nav.openUrl(ceo.villa.matty.BuildConfig.REPO_URL)
+                MattyCard(Modifier.fillMaxWidth(), padding = androidx.compose.foundation.layout.PaddingValues(8.dp)) {
+                    ActionRow(Icons.Outlined.Code, "Matty ${BuildConfig.VERSION_NAME}", "Connected to Mattermost ${repo.config.value["Version"].orEmpty()}") {
+                        nav.openUrl(ceo.villa.matty.BuildConfig.REPO_URL)
+                    }
+                    ActionRow(Icons.Outlined.Description, "Licences", "The open-source parts inside Matty") { nav.push(Route.Licences) }
                 }
-                ActionRow(Icons.Outlined.Description, "Licences", "The open-source parts inside Matty") { nav.push(Route.Licences) }
             }
         }
     }
     if (statusDialog) CustomStatusDialog(u) { statusDialog = false }
+    // After the page, as after the sheet. While your own profile sheet is open over this page,
+    // the sheet keeps it instead.
+    if (youPageKeepsProfileOver(u.id, nav.profileUserId)) ProfileOvers(u.id, nav, plugins)
 }
 
 @Composable

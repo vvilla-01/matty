@@ -232,6 +232,12 @@ class PushPlanTest {
         assertTrue(check.owesPut)
         assertEquals("Only the official Matty.", check.refusal)
         assertEquals("", check.rejected)
+        // So is an app older than the server takes.
+        val old = "This server needs Matty 0.1.32 or newer. You have 0.1.31."
+        val outdated = PushPlan.afterRefusal(side, VillaNetException("app_outdated", old, 403, old), owe, endpoint)
+        assertTrue(outdated.owesPut)
+        assertEquals(old, outdated.refusal)
+        assertEquals("", outdated.rejected)
         // No network, a limit, and Mattermost's 404 while the plugin is not running: owed.
         assertEquals(side.copy(owesPut = true), PushPlan.afterRefusal(side, java.io.IOException("offline"), owe, endpoint))
         assertEquals(side.copy(owesPut = true), PushPlan.afterRefusal(side, VillaNetException("rate_limited", "Wait.", 429, "Wait.", 5_000), owe, endpoint))

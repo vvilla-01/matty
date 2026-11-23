@@ -54,9 +54,29 @@ interface MattyPlugin {
                                                                // each, on the Plugins screen and in Settings
                                                                // (Matty Plugin: a signed release; this app
                                                                // verified by the server)
+    @Composable fun update(): PluginUpdate?                    // a newer release of your plugin, for system
+                                                               // admins on the Plugins screen: its line, the
+                                                               // page a tap opens (null: shown only), an
+                                                               // Install beside it (PluginInstall: the
+                                                               // question asked first, and what a yes
+                                                               // starts) and why the last install failed
+    fun onPluginsShown()                                       // the Plugins screen opened: read again what
+                                                               // update() says (Matty Plugin: /access), and
+                                                               // forget how the last install ended
     @Composable fun ProfileExtras(userId: String, host: PluginHost)
+    @Composable fun ProfileBanner(userId: String, host: PluginHost, modifier: Modifier, inView: Boolean)
+                                                               // drawn over the 3:1 band at the top of a
+                                                               // profile sheet and of the You page (Matty
+                                                               // Plugin: the person's banner); inView while
+                                                               // it can be seen: the sheet while it is open,
+                                                               // the You page while its tab is on screen
+                                                               // with nothing over it and Matty in front
+    @Composable fun ProfileBannerNote(userId: String, host: PluginHost) // a line under your name on the
+                                                               // You page about that banner (Matty Plugin:
+                                                               // why the last change failed)
     @Composable fun ProfileOver(userId: String, host: PluginHost) // kept while a profile is open, outside
-                                                               // its sheet (Matty Plugin: the crop screen)
+                                                               // its sheet, and by the You page while it
+                                                               // is composed (Matty Plugin: the crop screen)
     fun checkOutgoing(text: String): String?                    // block a message, with a reason
     fun panelArgsForLink(path: String): Map<String, String>?   // handle {site}/plug/<id>/...
     @Composable fun Overlay(host: PluginHost)                   // float UI over the app (a popout)
@@ -153,7 +173,7 @@ and title, "Live on Acme TV — Watch", "Acme TV is locked." from a server that 
 from `name` in `GET /api/v1/access`, and "Matty" until the server says. Words about the software
 itself (that it is too old, which release it is) say "Matty Plugin" whatever the server calls it.
 This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice channels need
-4.3.0. It covers:
+4.3.0, and the voice server's own mute, the update line and a minimum Matty need 4.4.0. It covers:
 
 - The client contract it shares with the plugin (the plugin's `contract/README.md`): the app is
   written for one revision of it, says so when the server's plugin is older ("Matty Plugin needs an
@@ -163,7 +183,8 @@ This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice
   something the server didn't send, or when the server sends a field the app neither reads nor
   lists as not read)
 - `GET /api/v1/access` (who the reader is, which plugin, its name and its release, and, for this
-  session, the app check's verdict), then `GET /api/v1/streams` and
+  session, the app check's verdict and the oldest Matty the server takes, `app.minimum`; for a
+  system admin, `update`, a newer release of the plugin), then `GET /api/v1/streams` and
   `GET /api/v1/accounts`, each sent with the tag of the copy in hand so that "nothing changed" is
   a few bytes; kept fresh by the `streams` socket event (whose `payload` is a JSON string), one
   round of reads at a time (never two within two seconds), and a 30 s conditional safety poll only
@@ -189,15 +210,16 @@ This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice
   sign-out ends the session (that one is tried once: the ended session stops the pushes anyway).
   Any other DELETE stays owed until the plugin answers it (a `404`, which is Mattermost's while
   the plugin is not running, does not settle it); a PUT or confirm the plugin does not take (no
-  network, a limit, a `404`, `app_unverified`) is owed too. What is owed is sent at the next app
-  start (a DELETE also while push is off), when the network comes back after an app start, and
-  once the app check passes; an owed PUT or confirm, or a server that could not be asked, also
-  when Matty comes back to the front (at most once in 30 s a server); then a saved server that
-  offers push (or has not said yet), with no registration and not stopped by the UnifiedPush app
-  (it stopped delivering, or was removed), is registered as well, while the UnifiedPush app takes
-  registrations. An owed PUT or confirm is
-  also sent again by itself while Matty runs (not for `app_unverified`): after the server's
-  `retry_after_ms` when it names one, else after 30 s, then twice more, the wait doubling, ten
+  network, a limit, a `404`, `app_unverified`, `app_outdated`) is owed too. What is owed is sent
+  at the next app start (a DELETE also while push is off), when the network comes back after an
+  app start, once the app check passes, and once a server closed to this version (see A minimum
+  Matty) opens again; while it is closed, nothing but the DELETE is sent to it. An owed PUT or
+  confirm is also sent, and a server that could not be asked is asked again, when Matty comes back
+  to the front (at most once in 30 s a server); then a saved server that offers push (or has not
+  said yet), with no registration and not stopped by the UnifiedPush app (it stopped delivering,
+  or was removed), is registered as well, while the UnifiedPush app takes registrations. An owed
+  PUT or confirm is also sent again by itself while Matty runs (not for `app_unverified` or
+  `app_outdated`): after the server's `retry_after_ms` when it names one, else after 30 s, then twice more, the wait doubling, ten
   minutes at most. An owed DELETE goes before that server is registered again, and while it cannot
   be paid the server counts as not reached. The pushes themselves (`message`, `clear`,
   `hello`, `test`, `ended`) are decrypted and read on the phone without connecting to the server.
@@ -224,15 +246,37 @@ This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice
   on at once) and the data channel `voice`, POSTed as `{channel, muted, deafened, sdp}` to
   `/api/v1/voice/join`, whose answer is the server's SDP with its candidates and this phone's
   `session`, `channel` and `name`. `POST /api/v1/voice/move`, `/voice/state` (one at a time, the
-  newest winning) and `/voice/leave`. The server speaks on the data channel: `talking` (who is
-  heard), `self` (this session's channel, and whether the voice server muted or suppressed it) and
-  `end` (the session is over, with its sentence). A connection that fails, is disconnected for 5 s,
+  newest winning; a tap sends its state again, even when it is what was last sent, when what was
+  shown before it was the voice server's word and not what was asked; before a join the request
+  still out from an earlier attempt is waited for, two seconds at most, and then given up and
+  cancelled on the wire (over HTTP/2 that ends the request, not the connection); one already on
+  its way may still reach the server after the join, and the
+  voice server's word then shows it) and `/voice/leave`. The server speaks on the data channel: `talking` (who is
+  heard), `self` (this session's channel, whether the voice server's admins muted or suppressed
+  it, and, from 4.4.0, `selfMuted` and `selfDeafened`, the voice server's own word for this
+  session's mute and deafen; missing is false) and `end` (the session is over, with its
+  sentence). The person is shown muted when they asked for it, or when `selfMuted` says so and two
+  seconds have passed since they last changed what they want or the join was answered (so a tap
+  shows at once); deafened likewise. A tap on the microphone or the headphones acts on what is
+  shown, and the own green ring shows only while not shown muted. While the voice server's admins
+  mute or suppress the session (`self`'s `muted` or `suppressed`), the own tile and the microphone
+  show it muted, as the others hear it, and the own ring stays off; a tap still changes the
+  person's own mute. The recording and the speaker follow what was asked. A connection that fails, is disconnected for 5 s,
   or whose data channel closes without an `end` (or with `end: mumble`) joins again by itself after
   1, 2, 5 and 10 s, then every 15 s, never sooner than a refusal's `retryAfterMs`, while there is a
   network; `429`, `503` and other server errors (5xx), a `404` without the plugin's own
   `not_found` (Mattermost's answer while the plugin is not running, as while it restarts), or no
   answer at all, are waited out the same way, and every other refusal stops with the server's
-  sentence. A second WebRTC factory for voice (`VoiceRtc`: voice attributes, mono,
+  sentence. With no network at all (the default network lost and no other there), a connected or
+  connecting session, or one whose join again is on its way, counts as lost at once and joins
+  again once a network comes. When the default
+  network becomes another one while connected (Wi-Fi to mobile data and back), the connection is
+  made again at once; the first network named after the watch starts, and the same one named
+  again, are no change. While a link is disconnected and its 5 s run, the voice screen, the bar and
+  the notification say "Reconnecting…" and nobody is shown talking, the person included; a link
+  that comes back says "Voice Connected" again and shows who the server last named as talking. While a join refused `429`, or `503` with a sentence, is waited out, the voice screen
+  shows that sentence over its controls, until the join is tried again, voice connects or the
+  person leaves. A second WebRTC factory for voice (`VoiceRtc`: voice attributes, mono,
   WebRTC's own echo canceller, noise suppressor and gain control) is made when a call starts and
   released when it ends; the streams' factory is not touched. Mute stops the recording
   (`setAudioRecording(false)`, so the microphone is really let go), deafen silences the output
@@ -242,7 +286,13 @@ This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice
   `microphone|mediaPlayback` when the microphone is allowed as it starts, `mediaPlayback`
   otherwise). Leaving the server leaves voice first
 - Voice channels on screen, Discord's mobile voice in Matty's own pieces: a "Voice Channels"
-  category after a team's channel categories (`sidebarSection`), each channel in tree order with
+  category after a team's channel categories (`sidebarSection`), each channel the server shows
+  (from 4.4.0 its admins may show only some, with **Channels to show** in System Console › Plugins
+  › Matty › Mumble; the plugin then tells the app nothing of the others, a shown channel whose
+  parent is not shown starts the tree at depth 0, and a phone moved into one of those by the voice
+  server stays connected and is in "Voice"; the app joining again there is not refused while its
+  session still waits for it, 45 seconds after the phone's connection went, and after that the
+  channel is refused like any other that is not shown, and voice stops) in tree order with
   the people in it (their account's picture and name when they have one here; muted, deafened and
   phone marks; a green ring while they speak, known in this phone's own channel); a tap opens the
   channel's sheet (who is there, the microphone to join with, and Join Voice, or Move Here from
@@ -261,6 +311,63 @@ This version works with Matty Plugin 4.0.0 or newer (contract revision 4); voice
 - LIVE rings on streamers' avatars and a "Live on <name> — Watch" row on their profiles
 - The composer guard that refuses a bare Broadcast Box token
 - The three checks below, through `checks()`
+- A newer release of the plugin, through `update()` (`plugins/villanet/PluginInstall.kt`), below
+- A minimum Matty, below
+
+### A newer Matty Plugin
+
+From 4.4.0, while the server's admins have **Look for updates** on (System Console › Plugins ›
+Matty › Updates), `/access` names a newer release to a system admin: `update {version, url,
+install}`. When its version is newer than the one running, the Plugins screen says under the
+plugin "Matty Plugin 4.5.0 is available". A tap opens the release's page, which the app builds
+itself (`https://github.com/vvilla-01/matty-plugin/releases/tag/v4.5.0`) and opens only when the
+server's `url` is exactly that; otherwise the line is only shown. No address is ever printed.
+Opening the Plugins screen reads `/access` once, in a round of reads paced as every round is, so
+the line says what the server says now.
+
+When `install` is true (the plugin is a signed release, the release has this server's bundle, and
+Mattermost takes plugin uploads), a button **Install** is beside the line. A tap asks "Install
+Matty Plugin 4.5.0?" ("<server> restarts the plugin, which ends voice through Matty for a few
+seconds.", **Cancel** and **Install**). Then the app leaves its own voice session on that server,
+and the line shows each step:
+
+- "Getting the update…": `POST /api/v1/admin/update/bundle`, whose answer is the bundle the plugin
+  downloaded and checked (both signatures, every file). It is streamed into a file in the app's
+  cache folder, at most 64 MB; the answer may keep the app waiting up to three minutes for its
+  next bytes, and the whole request is over within four minutes (the plugin's own download gives
+  up after two). Only a whole bundle goes on: at least one byte, and as many as the answer said
+  (otherwise "Couldn't get the update. Try again in a moment."). The plugin's version of the bundle
+  (`X-Matty-Update-Version`) must be the one the question named: otherwise nothing is uploaded, `/access` is read again so the line offers what
+  the plugin has now, and the line says "<server> now has Matty Plugin 4.6.0 ready. Tap Install
+  again in a minute." (with no version said, or one that cannot be read, "Couldn't get the update.
+  Try again in a moment."). When the plugin refuses the bundle, `/access` is read again too, so an
+  Install that cannot work stops being offered.
+- "Installing…": that file, exactly as it came, goes to Mattermost's own plugin upload
+  (`POST /api/v4/plugins`, multipart, `plugin` under the name `ceo.villa.matty-4.5.0.tar.gz`,
+  which the app builds from the version, and `force` = `true`), with the session, as **Plugin
+  Management** does on the web. Mattermost installs the plugin before it answers, so its answer is
+  waited for up to two minutes. An upload that gave no answer may still have installed it, so it
+  goes on to the wait as one that was answered; only a refusal ends the install at once: one in
+  Mattermost's own words, or a 4xx with no words, as from a proxy that turned the upload away
+  ("Couldn't install the update. Try again in a moment.").
+- Then `/access` is read every two seconds, for a minute at most (each read held to what is left
+  of the minute), until the plugin's version is the new one or newer, which the line names:
+  "Matty Plugin 4.5.0 is installed."
+
+The file is removed at the end whatever happens; one left by an app that was stopped in the
+middle is removed when the app next starts, and a sign-out's wipe of the caches removes it too.
+The plugin answers `503` `stopping` with its sentence when it stopped while it got the bundle,
+shown like any other refusal. A failure says the sentence the plugin or
+Mattermost gave (one paragraph, 300 characters at most) under the line, or "The update is larger
+than 64 MB.", "Couldn't get the update. Try again in a moment.", or, when a minute passes with
+the old version still answering, "Couldn't install the update. Try again in a moment." after an
+upload that gave no answer and "<server> took Matty Plugin 4.5.0 but is not running it yet. Look
+in System Console > Plugins." after one Mattermost answered; the button comes back. An end is
+said until the Plugins screen is opened again. One that `/access` has since contradicted is not
+said at all: "is installed." only while the running version is not older than the one installed,
+and a failure only while the running version is still older than the one that failed. Both requests go to the signed-in server, and nothing goes anywhere else. None of this
+is there for a person who is not a system admin, for a plugin older than 4.4.0, or when `install`
+is false or missing.
 
 ### Checking each other
 
@@ -329,6 +436,44 @@ copies that were altered or rebuilt, not a determined impostor. And it holds onl
 itself is intact: its secure hardware unbroken and its attestation key not leaked. Nothing is sent
 anywhere but to that server, and the server contacts nobody to check it
 ([PRIVACY.md](PRIVACY.md) says what leaves the phone for it).
+
+### A minimum Matty
+
+From 4.4.0 a server's admins can set the oldest Matty its plugin takes (**Minimum Matty
+version**, in System Console › Plugins › Matty › App check). The plugin reads the version from the
+User-Agent Matty sends with every request (`Matty/0.1.32 (…)`; a debug build's `-debug` is left
+out), says the minimum to everybody as `app.minimum` in `/access`, and refuses an older Matty
+`403` (`app_outdated`, "This server needs Matty 0.1.33 or newer. You have 0.1.32.") on every route
+of its API but `/access`, `/me`, `/release`, the app check's two, `DELETE /me/push` and
+`POST /voice/leave`. A Matty in voice through that server whose version does not meet a minimum
+that comes into force is taken out of voice by the plugin (`end` `off`, with that sentence), and a
+join that was still connecting then is answered with that refusal.
+
+On `/access` naming a minimum newer than itself, or one it cannot read (it reads a version as the
+plugin does: three numbers of up to nine digits, none with a leading zero), or on any refusal
+`app_outdated` (a picture's too), Matty closes that server (`data/session/AppNeed.kt`,
+`ui/lock/UpdateGate.kt`): nothing of it is drawn, and a page that cannot be dismissed says "Update
+Matty" and "<server> needs Matty 0.1.33 or newer. You have 0.1.32." ("<server> needs a newer version
+of Matty. You have 0.1.32." when it was not told which), with **Get the update** (the newest release
+of the app's repository), **Check again**, and the lock screen's **Switch server** and **Sign out**.
+A server that also asks for an unlock shows its lock first and this page after it. What was heard is
+kept with the saved server, so the page is there at the next start before the server answers. While
+it shows, `/access` is read as it appears, when Matty comes back to the front, and on **Check
+again**, at least five seconds apart (while the plugin's module is not attached, **Check again**
+reads the server's plugin list instead). The page goes on an answer, asked after the last refusal,
+whose minimum this version meets or that names none (a plugin of 4.3.0 or older names none); an
+answer that closes is not believed when it was asked before the last answer that opened. It also
+goes when the server's plugin list no longer has the plugin, or when Matty itself is updated past
+it. The page scrolls when it is taller than the screen. A voice call and a stream of that server end
+when the page comes, and nothing the plugin would refuse is asked meanwhile: no streams, accounts,
+clips or boards, and no push registration but its removal. What push owes that server stays owed and
+is sent as soon as the page goes. Its notifications still arrive, and **Reply** and **Mark as read**
+on them still work: they are Mattermost's own, which the plugin does not refuse; a tap on one waits
+behind the page. Matty 0.1.31 and older are not closed: they are refused what they ask the plugin
+for, and still get the list of who is live, which goes to every open client, but cannot play from it.
+And Matty says its own version: a changed copy can say any version, or not say it is Matty at all,
+and then neither the minimum nor the App check refuses it; *Check, and refuse a Matty that fails*
+turns away only a copy that says it is Matty and is not the official build.
 
 ### Push notifications
 

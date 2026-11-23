@@ -1,5 +1,6 @@
 package ceo.villa.matty.plugins.villanet
 
+import android.graphics.drawable.Animatable
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,22 +55,30 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import ceo.villa.matty.plugins.PluginHost
 import ceo.villa.matty.ui.components.ActionRow
+import ceo.villa.matty.ui.profile.BANNER_LINGER_MS
+import ceo.villa.matty.ui.profile.bannerDrawn
+import ceo.villa.matty.ui.profile.bannerPlays
 import ceo.villa.matty.ui.components.MattyDialog
 import ceo.villa.matty.ui.theme.Matty
+import coil3.asDrawable
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Scale
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
  * The person's banner across the top of their profile, over the coloured band (which shows while
  * it loads, and if it can't), and on your own (or, for a system admin, on a profile with one) the
- * small button that changes it. Nothing at all while this server's VillaNET has no banners.
+ * small button that changes it. Nothing at all while this server's VillaNET has no banners. The
+ * banners count as looked at (read, and followed while they stay) only while it is [inView]; what
+ * is drawn follows [bannerDrawn], and an animated one moves as [bannerPlays] says.
  */
 @Composable
-internal fun VillaNetProfileBanner(plugin: VillaNetPlugin, userId: String, host: PluginHost, modifier: Modifier) {
+internal fun VillaNetProfileBanner(plugin: VillaNetPlugin, userId: String, host: PluginHost, modifier: Modifier, inView: Boolean) {
     val access by plugin.access.collectAsState()
     val outdated by plugin.outdated.collectAsState()
     if (outdated != null || !bannersOffered(access?.version)) return
@@ -78,17 +87,28 @@ internal fun VillaNetProfileBanner(plugin: VillaNetPlugin, userId: String, host:
     val held by plugin.banners.collectAsState()
     val busy by plugin.bannerBusy.collectAsState()
     val me by repo.me.collectAsState()
-    LaunchedEffect(plugin, userId) { plugin.bannersProfileOpen() }
+    if (inView) LaunchedEffect(plugin, userId) { plugin.bannersProfileOpen() }
     val banner = held?.people?.get(userId)?.takeIf { it.v.isNotEmpty() }
     val mine = userId == repo.myId
     // A GIF's shown part is kept by VillaNET (3.8.0), so it can be adjusted; a still's other parts never left the phone.
     val adjustable = banner?.type == "image/gif" && bannerCropOffered(access?.version)
     val entries = bannerEntries(mine, banner != null, me?.isSystemAdmin == true, me?.roles?.split(' ')?.contains("system_guest") == true, adjustable)
-    // An animated banner plays only while it can be seen: minimised, it isn't drawn at all.
+    // A banner stays drawn under a full-screen view coming in or going, so nothing changes while
+    // it does; an animated one moves only while it can be seen, and for a moment after, and then
+    // holds still under the view. Minimised, nothing is drawn at all.
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    var recentlyInView by remember { mutableStateOf(inView) }
+    LaunchedEffect(inView) {
+        if (inView) recentlyInView = true
+        else {
+            delay(BANNER_LINGER_MS)
+            recentlyInView = false
+        }
+    }
     var menu by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
     val cr = LocalContext.current.contentResolver
+    val res = LocalContext.current.resources
     // The picture shown for choosing its part is decoded for the screen's longer side.
     val conf = LocalConfiguration.current
     val screenPixels = with(LocalDensity.current) { maxOf(conf.screenWidthDp, conf.screenHeightDp).dp.roundToPx() }
@@ -99,10 +119,18 @@ internal fun VillaNetProfileBanner(plugin: VillaNetPlugin, userId: String, host:
         val url = banner?.let { plugin.api?.bannerUrl(userId, it.v) }
         // Through the app's image loader, cached by its address (a new picture is a new "v"),
         // with the session token and no X-Requested-With: it is loaded as a picture.
-        if (url != null && lifecycle.isAtLeast(Lifecycle.State.STARTED)) {
+        val drawn = bannerDrawn(lifecycle.isAtLeast(Lifecycle.State.STARTED))
+        val plays = bannerPlays(inView, recentlyInView)
+        if (url != null && drawn) {
+            // The picture's own animation, from each success of its request: Coil starts it as it
+            // shows it, so it is started or stopped here as plays says, one that arrives while the
+            // page is covered too.
+            var motion by remember(url) { mutableStateOf<BannerMotion?>(null) }
+            LaunchedEffect(motion, plays) { motion?.let { if (plays) it.animation.start() else it.animation.stop() } }
+            val onShown = { s: AsyncImagePainter.State.Success -> motion = (s.result.image.asDrawable(res) as? Animatable)?.let { BannerMotion(it) } }
             val crop = bannerCropOf(banner?.crop)
             if (crop == null) {
-                AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(), onSuccess = onShown)
             } else {
                 // The part chosen fills the banner; decoded at the size that part needs to be sharp there.
                 BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -120,7 +148,7 @@ internal fun VillaNetProfileBanner(plugin: VillaNetPlugin, userId: String, host:
                     }
                     val scale = remember(crop) { CropFill(crop) }
                     val align = remember(crop) { CropAlign(crop) }
-                    AsyncImage(model = request, contentDescription = null, contentScale = scale, alignment = align, modifier = Modifier.fillMaxSize())
+                    AsyncImage(model = request, contentDescription = null, contentScale = scale, alignment = align, modifier = Modifier.fillMaxSize(), onSuccess = onShown)
                 }
             }
         }
@@ -177,10 +205,13 @@ internal fun VillaNetProfileBanner(plugin: VillaNetPlugin, userId: String, host:
 }
 
 /**
- * What lasts as long as the profile [userId] is open, composed outside its sheet: the crop screen
- * for one's own banner, and what the profile's opening and closing do to it and to a failure said
- * there. Not in the sheet: Material builds the sheet's window afresh when the screen's density
- * changes, and everything composed in it went with the old one, the part being chosen with it.
+ * What lasts as long as the profile [userId] is open (its sheet, or your own You page), composed
+ * outside any sheet: the crop screen for one's own banner, and what the profile's opening and
+ * closing do to it and to a failure said there. Not in the sheet: Material builds the sheet's
+ * window afresh when the screen's density changes, and everything composed in it went with the
+ * old one, the part being chosen with it. Your own sheet closed over the You page while a picked
+ * picture is still being read leaves no pick behind: the You page holds your profile open, and
+ * the crop screen opens from it when the reading ends, over whatever is shown then.
  */
 @Composable
 internal fun VillaNetProfileOver(plugin: VillaNetPlugin, userId: String, host: PluginHost) {
@@ -211,13 +242,24 @@ internal fun VillaNetProfileOver(plugin: VillaNetPlugin, userId: String, host: P
     }
 }
 
-/** Why the last change to this profile's banner failed, in a quiet line: the sheet covers the notice. */
+/**
+ * Why the last change to this profile's banner failed, in a quiet line: the sheet covers the
+ * notice. The You page says it too, under your name, so the line is where the banner is.
+ */
 @Composable
-internal fun BannerTrouble(plugin: VillaNetPlugin, userId: String) {
+internal fun BannerTrouble(plugin: VillaNetPlugin, userId: String, modifier: Modifier = Modifier) {
     val trouble by plugin.bannerTrouble.collectAsState()
     val text = trouble?.takeIf { it.first == userId }?.second ?: return
-    Text(text, color = Matty.colors.destructive, style = MaterialTheme.typography.bodySmall)
+    Text(text, color = Matty.colors.destructive, style = MaterialTheme.typography.bodySmall, modifier = modifier)
 }
+
+/** [BannerTrouble] under your name on the You page, with its own space above it. */
+@Composable
+internal fun VillaNetProfileBannerNote(plugin: VillaNetPlugin, userId: String) =
+    BannerTrouble(plugin, userId, Modifier.padding(top = 8.dp))
+
+/** A banner's own animation, as one success of its request gave it: a new one for each success, so each is held to what plays says. */
+private class BannerMotion(val animation: Animatable)
 
 /** Scales a banner's picture so that its [crop] covers the box (see [cropScale]). */
 private class CropFill(private val crop: CropRect) : ContentScale {

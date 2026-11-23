@@ -28,10 +28,12 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.BufferedSink
 import okio.source
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.URLEncoder
@@ -58,6 +60,9 @@ class ApiException(val status: Int, val error: ApiError?, message: String) : IOE
 }
 
 private val JSON_TYPE = "application/json; charset=utf-8".toMediaType()
+
+/** How long a plugin upload may wait for Mattermost's answer, in minutes. */
+internal const val PLUGIN_UPLOAD_READ_MINUTES = 2L
 
 /**
  * The moment by which every request a coroutine makes through [MattermostClient] must be over,
@@ -126,21 +131,28 @@ class MattermostClient(
     }
 
     /**
-     * The call for [req], held to the calling coroutine's [RequestDeadline] when it has one: its
-     * timeout is then the smaller of the client's own and the time left, and with no time left it
-     * fails without going out. Without one, the client's own timeout alone.
+     * The call for [req] on [http] (by default [apiHttp]), held to the calling coroutine's
+     * [RequestDeadline] when it has one: its timeout is then the smaller of the client's own and
+     * the time left, and with no time left it fails without going out. Without one, the client's
+     * own timeout alone.
      */
-    suspend fun newCall(req: Request): Call {
-        val left = currentCoroutineContext()[RequestDeadline]?.leftMs() ?: return apiHttp.newCall(req)
+    suspend fun newCall(req: Request, http: OkHttpClient = apiHttp): Call {
+        val left = currentCoroutineContext()[RequestDeadline]?.leftMs() ?: return http.newCall(req)
         if (left <= 0) throw IOException("Out of time")
-        val call = apiHttp.newCall(req)
-        val own = apiHttp.callTimeoutMillis.toLong()
+        val call = http.newCall(req)
+        val own = http.callTimeoutMillis.toLong()
         if (own == 0L || left < own) call.timeout().timeout(left, TimeUnit.MILLISECONDS)
         return call
     }
 
-    suspend fun execute(req: Request): Response = withContext(Dispatchers.IO) {
-        val resp = newCall(req).execute()
+    /**
+     * Sends [req] on [http] and gives back its answer, or throws Mattermost's refusal
+     * ([ApiException]). The caller reads and closes the answer on [Dispatchers.IO]: closing an
+     * answer that was not read whole reads the rest of it from the network, which Android refuses
+     * on the main thread. [executeUnread] does that for an answer nobody reads.
+     */
+    suspend fun execute(req: Request, http: OkHttpClient = apiHttp): Response = withContext(Dispatchers.IO) {
+        val resp = newCall(req, http).execute()
         // The server's clock against this device's: what "five minutes after posting" means is
         // the server's to say, and a tablet's clock can be minutes out.
         if (TransportPolicy.sameOrigin(req.url, origin)) resp.headers.getDate("Date")?.let { clockOffsetMs = it.time - resp.receivedResponseAtMillis }
@@ -169,9 +181,14 @@ class MattermostClient(
     suspend fun <T> put(path: String, body: JsonElement, ser: KSerializer<T>): T =
         call(request(path).put(body.toString().toRequestBody(JSON_TYPE)).build(), ser)
 
+    /** Sends [req] on [http] and closes its answer unread, on [Dispatchers.IO] (see [execute]). */
+    private suspend fun executeUnread(req: Request, http: OkHttpClient = apiHttp) = withContext(Dispatchers.IO) {
+        execute(req, http).close()
+    }
+
     suspend fun send(method: String, path: String, body: JsonElement? = null) {
         val rb = body?.toString()?.toRequestBody(JSON_TYPE) ?: if (method == "GET" || method == "DELETE") null else "".toRequestBody(JSON_TYPE)
-        execute(request(path).method(method, rb).build()).close()
+        executeUnread(request(path).method(method, rb).build())
     }
 
     suspend fun getRaw(path: String): String = withContext(Dispatchers.IO) {
@@ -271,7 +288,7 @@ class MattermostClient(
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("image", "avatar.jpg", bytes.toRequestBody(mime.toMediaType()))
             .build()
-        execute(request("/users/$userId/image").post(body).build()).close()
+        executeUnread(request("/users/$userId/image").post(body).build())
     }
 
     /** Autocomplete users; when [channelId] is given, results are split into in/out of channel. */
@@ -492,6 +509,31 @@ class MattermostClient(
             throw e
         }
         return res.fileInfos.firstOrNull() ?: throw IOException("Upload returned no file")
+    }
+
+    // ---- plugins --------------------------------------------------------------------------
+
+    /**
+     * The request that hands the plugin bundle in [file] to Mattermost under [name], over the
+     * plugin of the same id if it is there, as the System Console's upload does (system admins).
+     */
+    fun uploadPluginRequest(file: File, name: String): Request {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("plugin", name, file.asRequestBody("application/gzip".toMediaType()))
+            .addFormDataPart("force", "true")
+            .build()
+        return request("/plugins").post(body).build()
+    }
+
+    /**
+     * The client for [uploadPlugin]: Mattermost installs the plugin before it answers, so its
+     * answer is waited for up to [PLUGIN_UPLOAD_READ_MINUTES].
+     */
+    internal val pluginUploadHttp: OkHttpClient by lazy { apiHttp.newBuilder().readTimeout(PLUGIN_UPLOAD_READ_MINUTES, TimeUnit.MINUTES).build() }
+
+    /** Sends [uploadPluginRequest]. Refused with Mattermost's own sentence ([ApiException]). */
+    suspend fun uploadPlugin(file: File, name: String) {
+        executeUnread(uploadPluginRequest(file, name), pluginUploadHttp)
     }
 
     // ---- emoji ----------------------------------------------------------------------------

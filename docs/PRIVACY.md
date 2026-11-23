@@ -36,7 +36,15 @@ with another server on screen), as Mattermost's own app does; nothing of the ser
 lock is asked to set one first. From the lock you can also switch to another signed-in server
 (which then follows its own rules) or sign out of that one. What a server required is remembered with its session, so it
 holds from the first frame of the next start, and only an answer from the server itself can lift
-it. Settings shows a line for each one that applies. Two-factor sign-in codes work as always; a
+it. Settings shows a line for each one that applies. A server's Matty Plugin (4.4.0 or newer) may
+also set the oldest Matty it takes (**Minimum Matty version**), which it reads from the version
+Matty names in every request (its User-Agent, `Matty/0.1.32`, as always): this Matty, when it is
+older than that, shows that server only as a page saying to update, with the same ways to another
+server and to sign out, remembered in the same way, leaves any voice call there, and asks that
+server's plugin nothing it would refuse. Matty 0.1.31 and older are only refused what they ask
+the plugin for. That server's notifications still arrive, and Reply and Mark as read on
+them still work: they are Mattermost's own, which the plugin does not refuse. Two-factor sign-in
+codes work as always; a
 server that requires two-factor authentication of an account that hasn't set it up gets a
 sentence saying to turn it on in Mattermost on the web.
 
@@ -137,7 +145,8 @@ voice channel unmuted or unmute in one, and never otherwise; refused, you stay i
 listening, shown as muted. It records only while you are in a voice channel and not muted or
 deafened (nor held by a phone call, nor muted by the voice server): muting lets go of it, and
 Android's microphone indicator goes out. While it records, what it hears goes, encrypted (DTLS-SRTP),
-to Matty Plugin on your server, and only there; the plugin passes it on, as it is, over TLS to the
+to Matty Plugin on your server, and only there; the plugin passes it on (with Matty Plugin 4.4.0,
+only while the voice server holds you neither muted nor deafened), as it is, over TLS to the
 voice (Mumble) server your server's admins set up, which plays it to the people in your channel.
 The plugin never decodes it and keeps none of it; what the voice server does is up to its admins.
 The voice server knows you as `<your username> (Matty)`, or `<your username>.matty` on a voice
@@ -175,8 +184,17 @@ version, the security level and boot state, what the app said of itself, and, wh
 certificate digest it passed with and, for a phone whose system is signed with a key of its own
 (GrapheneOS's, say), that key's digest. Its admins can see that list; the chain itself is not kept.
 
+**Installing a plugin update.** Only for a system admin of a server, and only when they tap
+**Install** beside "Matty Plugin 4.5.0 is available" and say yes: Matty asks that server's Matty
+Plugin for the release's bundle (which the plugin downloaded from GitHub and checked), keeps it in
+its cache folder only until it is handed on, and uploads exactly those bytes to that same server's
+plugin upload, with your session. Nothing goes anywhere else. The file is removed at the end
+whatever happens, and one left by an app that was stopped in the middle is removed when the app
+next starts.
+
 **Everything else.** Matty connects to the servers you add, plus Giphy when you open the GIF
-picker, and to the sites that pictures in messages live on: a picture somebody posts or links to
+picker, GitHub in a browser tab when you tap **Get the update** or a line saying a newer Matty
+Plugin is out, and to the sites that pictures in messages live on: a picture somebody posts or links to
 from another site is loaded from that site, which shows it your address and when you looked
 (never your sign-in). If your server's image proxy is on (System Console › Environment › Image
 Proxy), those pictures come through your server instead, and the other sites see only it; we

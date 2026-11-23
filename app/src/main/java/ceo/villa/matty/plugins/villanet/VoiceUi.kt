@@ -150,7 +150,8 @@ private fun rememberVoiceRooms(plugin: VillaNetPlugin, repo: ChatRepository, tal
     val outdated by plugin.outdated.collectAsState()
     val voiceNow by remember(plugin) { plugin.snapshot.map { it?.voice }.distinctUntilChanged() }.collectAsState(plugin.snapshot.value?.voice)
     val seat by plugin.voice.seat.collectAsState()
-    val muted by plugin.voice.muted.collectAsState()
+    // The own seat as the others hear it: muted by the voice server too.
+    val muted by plugin.voice.seenMuted.collectAsState()
     val deafened by plugin.voice.deafened.collectAsState()
     // Never from a plugin too old for this app, which is asked nothing.
     val roster = voiceNow?.takeIf { outdated == null }
@@ -393,15 +394,18 @@ internal fun VoiceScreen(plugin: VillaNetPlugin, host: PluginHost, onClose: () -
     val access by plugin.access.collectAsState()
     val snap by plugin.snapshot.collectAsState()
     val status by voice.state.collectAsState()
+    val linkDown by voice.linkDown.collectAsState()
     val channel by voice.channel.collectAsState()
     val moving by voice.moving.collectAsState()
     val seat by voice.seat.collectAsState()
     val muted by voice.muted.collectAsState()
+    val seenMuted by voice.seenMuted.collectAsState()
     val deafened by voice.deafened.collectAsState()
     val selfMuted by voice.selfMuted.collectAsState()
     val held by voice.held.collectAsState()
     val serverMuted by voice.serverMuted.collectAsState()
     val suppressed by voice.suppressed.collectAsState()
+    val waitWords by voice.waitWords.collectAsState()
     val talking by voice.talking.collectAsState()
     val mic by voice.mic.collectAsState()
     // The channel of a session that failed, for its name and for joining again.
@@ -418,11 +422,12 @@ internal fun VoiceScreen(plugin: VillaNetPlugin, host: PluginHost, onClose: () -
     }
 
     val me = if (seat == null && status.inCall) {
-        VoiceMember(-1, repo.myId, repo.nameOf(repo.myId).takeIf { it != "…" } ?: "You", muted, deafened, phone = true, speaking = false, me = true)
+        VoiceMember(-1, repo.myId, repo.nameOf(repo.myId).takeIf { it != "…" } ?: "You", seenMuted, deafened, phone = true, speaking = false, me = true)
     } else null
     val tiles = voiceTilesOf(rooms, channel, me)
     val title = voiceChannelName(snap?.voice, channel ?: lastChannel) ?: "Voice"
-    val subtitle = moving?.let { to -> "Moving to ${voiceChannelName(snap?.voice, to) ?: "another channel"}…" } ?: voiceStatusWords(status)
+    val shown = voiceShownStatus(status, linkDown)
+    val subtitle = moving?.let { to -> "Moving to ${voiceChannelName(snap?.voice, to) ?: "another channel"}…" } ?: voiceStatusWords(shown)
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     // The room the controls (and the notice over them) take at the bottom, as they are measured.
@@ -467,7 +472,7 @@ internal fun VoiceScreen(plugin: VillaNetPlugin, host: PluginHost, onClose: () -
                             .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        voiceNoticeOf(held, serverMuted, suppressed, mic)?.let { n ->
+                        voiceNoticeOf(held, serverMuted, suppressed, mic, waitWords)?.let { n ->
                             Text(
                                 n.text, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
                                 color = if (n.toSettings) c.link else c.textSecondary,
@@ -477,11 +482,11 @@ internal fun VoiceScreen(plugin: VillaNetPlugin, host: PluginHost, onClose: () -
                             )
                             Spacer(Modifier.height(10.dp))
                         }
-                        VoiceControls(voice, muted, deafened)
+                        VoiceControls(voice, muted, deafened, seenMuted)
                     }
                 }
             }
-            VoiceHeader(title, subtitle, connected = status == VoiceStatus.Connected && moving == null, onBack = onClose)
+            VoiceHeader(title, subtitle, connected = shown == VoiceStatus.Connected && moving == null, onBack = onClose)
         }
     }
 }
@@ -535,9 +540,13 @@ private fun VoiceTile(host: PluginHost, m: VoiceMember, modifier: Modifier) {
     }
 }
 
-/** The control pill: mute, deafen, the audio output (a small picker), and leave in red. */
+/**
+ * The control pill: mute, deafen, the audio output (a small picker), and leave in red. The
+ * microphone shows muted while the others hear the person muted ([seen], the voice server's
+ * hold included); a tap changes the person's own mute ([muted]).
+ */
 @Composable
-private fun VoiceControls(voice: VoiceSession, muted: Boolean, deafened: Boolean) {
+private fun VoiceControls(voice: VoiceSession, muted: Boolean, deafened: Boolean, seen: Boolean) {
     val c = Matty.colors
     val output by voice.output.collectAsState()
     val outputs by voice.outputs.collectAsState()
@@ -548,7 +557,7 @@ private fun VoiceControls(voice: VoiceSession, muted: Boolean, deafened: Boolean
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        VoiceControlButton(if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, if (muted) "Unmute" else "Mute", on = muted) { voice.setMuted(!muted) }
+        VoiceControlButton(if (seen) Icons.Filled.MicOff else Icons.Filled.Mic, if (muted) "Unmute" else "Mute", on = seen) { voice.setMuted(!muted) }
         VoiceControlButton(if (deafened) Icons.Filled.HeadsetOff else Icons.Filled.Headset, if (deafened) "Undeafen" else "Deafen", on = deafened) { voice.setDeafened(!deafened) }
         Box {
             VoiceControlButton(outputIcon(output?.kind), "Audio output, ${output?.name ?: "automatic"}", on = false) { picking = true }
@@ -603,9 +612,11 @@ internal fun VoiceBarPill(plugin: VillaNetPlugin, host: PluginHost, modifier: Mo
     val voice = plugin.voice
     val snap by plugin.snapshot.collectAsState()
     val status by voice.state.collectAsState()
+    val linkDown by voice.linkDown.collectAsState()
     val channel by voice.channel.collectAsState()
     val muted by voice.muted.collectAsState()
-    val now = voiceBarOf(status, voiceChannelName(snap?.voice, channel), host.repo.siteName)
+    val seen by voice.seenMuted.collectAsState()
+    val now = voiceBarOf(voiceShownStatus(status, linkDown), voiceChannelName(snap?.voice, channel), host.repo.siteName)
     val last = remember { arrayOfNulls<VoiceBar>(1) }
     if (now != null) last[0] = now
     val bar = now ?: last[0] ?: return
@@ -629,7 +640,7 @@ internal fun VoiceBarPill(plugin: VillaNetPlugin, host: PluginHost, modifier: Mo
             Text(bar.place, style = MaterialTheme.typography.labelSmall, color = c.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (bar.controls) {
-            PillIconButton(if (muted) Icons.Filled.MicOff else Icons.Filled.Mic, if (muted) "Unmute" else "Mute", tint = if (muted) c.dnd else c.icon) { voice.setMuted(!muted) }
+            PillIconButton(if (seen) Icons.Filled.MicOff else Icons.Filled.Mic, if (muted) "Unmute" else "Mute", tint = if (seen) c.dnd else c.icon) { voice.setMuted(!muted) }
             PillIconButton(Icons.Filled.CallEnd, "Leave", tint = c.dnd) { voice.leave() }
         } else {
             PillIconButton(Icons.Outlined.Close, "Dismiss") { voice.leave() }

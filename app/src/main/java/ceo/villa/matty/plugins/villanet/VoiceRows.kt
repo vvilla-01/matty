@@ -71,6 +71,14 @@ internal fun voiceStatusWords(status: VoiceStatus): String = when (status) {
     is VoiceStatus.Failed -> "Voice Disconnected"
 }
 
+/**
+ * Where a session stands as the screens and the notification show it: a connected one whose link
+ * is down while the core waits to see whether it comes back ([VoiceCore.linkDown]) shows as
+ * reconnecting.
+ */
+internal fun voiceShownStatus(status: VoiceStatus, linkDown: Boolean): VoiceStatus =
+    if (status == VoiceStatus.Connected && linkDown) VoiceStatus.Reconnecting else status
+
 // ---- the join sheet --------------------------------------------------------------------------
 
 /**
@@ -168,11 +176,15 @@ internal fun voiceTilesOf(rooms: List<VoiceRoom>, channel: Int?, me: VoiceMember
     return people.sortedByDescending { it.me }.distinctBy { it.session }
 }
 
-/** A line over the controls: why the microphone is not heard, and whether a tap opens Android's settings. */
+/** A line over the controls: why the microphone is not heard, or why voice waits to join, and whether a tap opens Android's settings. */
 internal data class VoiceNotice(val text: String, val toSettings: Boolean)
 
-/** What the voice screen says over its controls, if anything: a phone call, the voice server's doing, or the permission. */
-internal fun voiceNoticeOf(held: Boolean, serverMuted: Boolean, suppressed: Boolean, mic: MicPermission): VoiceNotice? = when {
+/**
+ * What the voice screen says over its controls, if anything: the server's sentence while a join
+ * it refused is waited out ([waiting]), a phone call, the voice server's doing, or the permission.
+ */
+internal fun voiceNoticeOf(held: Boolean, serverMuted: Boolean, suppressed: Boolean, mic: MicPermission, waiting: String? = null): VoiceNotice? = when {
+    waiting != null -> VoiceNotice(waiting, false)
     held -> VoiceNotice("On hold while a phone call has the audio.", false)
     serverMuted -> VoiceNotice("The voice server has muted you.", false)
     suppressed -> VoiceNotice("You can't speak in this channel.", false)

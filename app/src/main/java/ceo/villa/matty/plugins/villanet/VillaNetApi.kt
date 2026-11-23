@@ -2,7 +2,13 @@ package ceo.villa.matty.plugins.villanet
 
 import ceo.villa.matty.data.api.MattermostClient
 import ceo.villa.matty.data.api.MattermostJson
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -16,7 +22,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import java.io.InputStream
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** The id of the Matty plugin, the server plugin this module speaks for. */
 const val VILLANET_ID = "ceo.villa.matty"
@@ -66,6 +75,11 @@ data class VnAccess(
     val push: VnPushWord? = null,
     /** Whether people may talk in voice channels from here (from 4.3.0); null when it didn't say or voice is off. */
     val voice: VnVoiceWord? = null,
+    /**
+     * A newer release of the plugin than the one running (from 4.4.0): only to a system admin,
+     * and only while the server's admin has it look for one; null otherwise.
+     */
+    val update: VnUpdateWord? = null,
 ) {
     val canWatch get() = access == "linked" || access == "letIn"
     val linked get() = access == "linked"
@@ -80,6 +94,14 @@ data class VnAccess(
         const val SINCE = "4.0.0"
     }
 }
+
+/**
+ * `update` in `GET /access`: the newer release's version, its page (which the app opens only when
+ * it is the page the app builds: [pluginUpdateOf]), and whether a system admin can install it from
+ * the app ([install], from 4.4.0; missing is false).
+ */
+@Serializable
+data class VnUpdateWord(val version: String = "", val url: String = "", val install: Boolean = false)
 
 /** `release` in `GET /access`: what the plugin found of its own folder, which the app verifies for itself ([VnRelease]). */
 @Serializable
@@ -109,7 +131,8 @@ data class VnRelease(
 
 /**
  * `app` in `GET /access`, for the session asking: [check] is the server's setting (off | report
- * | require), [state] what it found (verified | unverified | none), [reason] why, in its words.
+ * | require), [state] what it found (verified | unverified | none), [reason] why, in its words;
+ * and the server's [minimum] Matty.
  */
 @Serializable
 data class VnAppWord(
@@ -120,6 +143,11 @@ data class VnAppWord(
     val development: Boolean = false,
     /** The app's version code the verdict was for, as Android attested it. */
     val versionCode: Long = 0,
+    /**
+     * The oldest Matty this server takes (from 4.4.0), `N.N.N`, for everybody; "" when none is
+     * set. An app older than it closes the server: see [ceo.villa.matty.data.session.AppNeedKeeper].
+     */
+    val minimum: String = "",
 )
 
 /**
@@ -475,7 +503,10 @@ data class VnVoice(
     val people: List<VnVoicePerson> = emptyList(),
 )
 
-/** One channel on the voice server: [id] 0 is the root, which alone has no [parent]; [max] 0 is no limit. */
+/**
+ * One channel on the voice server: [id] 0 is the root; [parent] is null for the root, and for a
+ * shown channel whose parent is not shown; [max] 0 is no limit.
+ */
 @Serializable
 data class VnVoiceChannel(
     val id: Int = 0,
@@ -528,9 +559,19 @@ data class VnVoiceSignal(
     val reason: String = "",
 )
 
-/** `self` on the data channel: this session's channel, whether the voice server muted it, and whether it may not speak there. */
+/**
+ * `self` on the data channel: this session's channel, whether the voice server's admin muted it,
+ * whether it may not speak there, and whether the voice server holds it self muted and self
+ * deafened (its own word, which a plugin before 4.4.0 doesn't send: false).
+ */
 @Serializable
-data class VnVoiceSelf(val channel: Int = 0, val muted: Boolean = false, val suppressed: Boolean = false)
+data class VnVoiceSelf(
+    val channel: Int = 0,
+    val muted: Boolean = false,
+    val suppressed: Boolean = false,
+    val selfMuted: Boolean = false,
+    val selfDeafened: Boolean = false,
+)
 
 /** `POST /voice/join`'s body. */
 internal fun voiceJoinBody(channel: Int, muted: Boolean, deafened: Boolean, sdp: String): JsonObject = buildJsonObject {
@@ -670,12 +711,15 @@ object PluginMediaRefusals {
  * holds about them is then behind, and whoever owns that asks again. [onAppCheck] hears, on the
  * same terms, of every request refused for the app check ([APP_UNVERIFIED], with the server's
  * sentence) and of every answer to a route the check gates (null: see [appCheckGated]).
+ * [onOutdated] hears, on the same terms, of every request refused for this app being older than
+ * the server takes ([APP_OUTDATED], with the server's sentence).
  */
 class VillaNetApi(
     private val mm: MattermostClient,
     /** What this server calls the plugin just now, for the app's own words about an answer. */
     private val name: () -> String = { PRODUCT_NAME },
     private val onAppCheck: VillaNetApi.(refused: String?) -> Unit = {},
+    private val onOutdated: VillaNetApi.(sentence: String?) -> Unit = {},
     private val onLocked: () -> Unit = {},
 ) {
     val base = "${mm.baseUrl}/plugins/$VILLANET_ID"
@@ -698,6 +742,36 @@ class VillaNetApi(
         }
     }
 
+    /**
+     * As [exchange], and the call is cancelled on the wire (OkHttp's `Call.cancel`) when the
+     * calling coroutine is cancelled while it is out: for the request that is given up while it
+     * waits. What was already written may still reach the server.
+     */
+    private suspend fun <T> exchangeAborting(r: Request, ser: KSerializer<T>?): Pair<Int, T?> = coroutineScope {
+        val call = mm.newCall(r)
+        val over = AtomicBoolean(false)
+        val abort = launch(start = CoroutineStart.UNDISPATCHED) {
+            try { awaitCancellation() } finally { if (!over.get()) call.cancel() }
+        }
+        try {
+            withContext(Dispatchers.IO) {
+                call.execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) throw refusal(resp.code, body)
+                    answered(r)
+                    resp.code to (if (ser == null || body.isBlank()) null else MattermostJson.decodeFromString(ser, body))
+                }
+            }
+        } catch (e: IOException) {
+            // Cancelled because nobody waits for it any more: that is a cancellation, not a failure.
+            currentCoroutineContext().ensureActive()
+            throw e
+        } finally {
+            over.set(true)
+            abort.cancel()
+        }
+    }
+
     private val apiUrl = api.toHttpUrlOrNull()
 
     /** Whether [url] is one of this plugin's routes. */
@@ -716,10 +790,11 @@ class VillaNetApi(
         return { PluginMediaRefusals.remove(this) }
     }
 
-    /** A picture of this plugin's refused 403 with [body]: heard if it was for the app check. */
+    /** A picture of this plugin's refused 403 with [body]: heard if it was for the app check, or for this app's version. */
     internal fun mediaRefused(body: String) {
         val err = runCatching { MattermostJson.decodeFromString(VnError.serializer(), body) }.getOrNull() ?: return
         if (err.code == APP_UNVERIFIED) onAppCheck(err.error.trim().ifBlank { null } ?: "${name()} returned 403")
+        if (err.code == APP_OUTDATED) onOutdated(err.error.trim().ifBlank { null })
     }
 
     /** [r] was answered: if the app check gates its route, the server holds this Matty good enough for it. */
@@ -736,6 +811,7 @@ class VillaNetApi(
         val reason = err?.error?.trim()?.ifBlank { null }
         if (err?.code == "locked" || err?.code == "watch_only") onLocked()
         if (err?.code == APP_UNVERIFIED) onAppCheck(reason ?: fallback)
+        if (err?.code == APP_OUTDATED) onOutdated(reason)
         return VillaNetException(err?.code.orEmpty(), reason ?: fallback, status, reason, err?.retryAfterMs ?: 0)
     }
 
@@ -922,12 +998,46 @@ class VillaNetApi(
     suspend fun voiceMove(channel: Int): VnVoiceMoved =
         post("/voice/move", buildJsonObject { put("channel", channel) }, VnVoiceMoved.serializer()) ?: VnVoiceMoved(channel)
 
-    /** Says whether this phone is muted or deafened (deafened is muted too). */
+    /**
+     * Says whether this phone is muted or deafened (deafened is muted too). Cancelled while it is
+     * out, the request is cancelled on the wire too.
+     */
     suspend fun voiceState(muted: Boolean, deafened: Boolean): VnVoiceSelfState =
-        post("/voice/state", voiceStateBody(muted, deafened), VnVoiceSelfState.serializer()) ?: VnVoiceSelfState(muted || deafened, deafened)
+        exchangeAborting(req("/voice/state").post(voiceStateBody(muted, deafened).toString().toRequestBody(json)).build(), VnVoiceSelfState.serializer()).second
+            ?: VnVoiceSelfState(muted || deafened, deafened)
 
     /** Leaves voice; fine when there was no session. */
     suspend fun voiceLeave() { post<Unit>("/voice/leave", JsonObject(emptyMap()), null) }
+
+    // ---- updates (from 4.4.0) ------------------------------------------------------------------
+
+    /**
+     * The client for [updateBundle]: the plugin fetches and checks the release first, which can
+     * take minutes (its own download gives up after two), and the whole call is over within
+     * [BUNDLE_CALL_MINUTES].
+     */
+    internal val bundleHttp by lazy {
+        mm.apiHttp.newBuilder().readTimeout(BUNDLE_READ_MINUTES, TimeUnit.MINUTES).callTimeout(BUNDLE_CALL_MINUTES, TimeUnit.MINUTES).build()
+    }
+
+    /** The request for the checked bundle of the newest release the plugin knows (system admins only). */
+    internal fun updateBundleRequest(): Request = req("/admin/update/bundle").post(ByteArray(0).toRequestBody(null)).build()
+
+    /**
+     * Asks for the checked bundle of the newest release and gives [read] the answer's body while
+     * it is open, with the length it says (-1 when it does not) and the version the plugin says
+     * it is (`X-Matty-Update-Version`, null when it says none), so that the body goes to a file
+     * as it comes and never sits in memory whole. Refused like any other call ([VillaNetException]).
+     */
+    suspend fun updateBundle(read: (InputStream, Long, String?) -> Unit) = withContext(Dispatchers.IO) {
+        val r = updateBundleRequest()
+        bundleHttp.newCall(r).execute().use { resp ->
+            if (!resp.isSuccessful) throw refusal(resp.code, resp.peekBody(REFUSAL_MAX_BYTES).string())
+            answered(r)
+            val body = resp.body ?: throw IOException("No bundle")
+            body.byteStream().use { read(it, body.contentLength(), resp.header(BUNDLE_VERSION_HEADER)) }
+        }
+    }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
     fun stillUrl(s: VnStream) = "$api/stills?handle=${enc(s.handle)}&v=${enc(s.stillVersion)}"
@@ -958,6 +1068,15 @@ class VillaNetApi(
 
         fun looksLikeToken(text: String) = UUID.matches(cleanToken(text))
 
+        /** How long the bundle's answer may keep the app waiting for its next bytes, in minutes. */
+        internal const val BUNDLE_READ_MINUTES = 3L
+
+        /** The longest the bundle's whole call may take, in minutes. */
+        internal const val BUNDLE_CALL_MINUTES = 4L
+
+        /** The most of a refusal's body that is read. */
+        private const val REFUSAL_MAX_BYTES = 16L * 1024
+
         /** The code of a clip that has expired or been deleted (410): the only answer that means so. */
         const val CLIP_GONE = "clip_gone"
 
@@ -966,6 +1085,13 @@ class VillaNetApi(
          * server requires it (403): the sentence says why.
          */
         const val APP_UNVERIFIED = "app_unverified"
+
+        /**
+         * The code of a refusal of a Matty older than the server's minimum (403, from 4.4.0), on
+         * every route but `/access`, `/me`, `/release`, the app check's two, `DELETE /me/push` and
+         * `POST /voice/leave`: the sentence names the minimum.
+         */
+        const val APP_OUTDATED = "app_outdated"
 
         /** The push routes' refusal while push is off on the server (503): the sentence says why. */
         const val PUSH_UNAVAILABLE = "unavailable"

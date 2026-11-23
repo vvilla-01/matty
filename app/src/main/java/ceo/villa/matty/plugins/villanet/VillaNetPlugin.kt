@@ -13,6 +13,8 @@ import ceo.villa.matty.data.api.str
 import ceo.villa.matty.data.repo.ChatRepository
 import ceo.villa.matty.data.api.SocketState
 import ceo.villa.matty.data.runCatchingCancellable
+import ceo.villa.matty.data.session.APP_CHECK_GAP_MS
+import ceo.villa.matty.data.session.ReadPace
 import ceo.villa.matty.plugins.MattyPlugin
 import ceo.villa.matty.plugins.PersonFacts
 import ceo.villa.matty.plugins.PluginHost
@@ -295,9 +297,18 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
 
     override fun onAttach(repo: ChatRepository) {
         this.repo = repo
+        if (installer?.repo !== repo) {
+            installer = ServerInstall(repo, PluginInstaller(installPort(repo), repo.scope))
+            // Let go with the server: nothing of it is held once it is left.
+            repo.scope.coroutineContext[Job]?.invokeOnCompletion { if (installer?.repo === repo) installer = null }
+        }
         // A refusal that says "locked" means what this app holds about the reader is behind: ask.
         // (Not while a round is already asking: its own reads are refused the same way.)
-        val a = VillaNetApi(repo.client, name = { shownName }, onAppCheck = { refused -> appCheckHeard(this, refused) }) {
+        val a = VillaNetApi(
+            repo.client, name = { shownName },
+            onAppCheck = { refused -> appCheckHeard(this, refused) },
+            onOutdated = { sentence -> outdatedHeard(this, sentence) },
+        ) {
             repo.scope.launch { if (rounds?.running != true) resync() }
         }
         api = a
@@ -367,7 +378,7 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
                 var wait = POLL_MS
                 while (isActive) {
                     delay(wait)
-                    if (visible.value > 0 && repo.appInForeground && _outdated.value == null) {
+                    if (visible.value > 0 && repo.appInForeground && _outdated.value == null && !closed()) {
                         // Refused for the app check is an answer: the poll is how a change of the
                         // server's rules is heard while the panel shows the refusal.
                         wait = if (refreshStreams() || _appRefused.value != null) POLL_MS else (wait * 2).coerceAtMost(POLL_MAX_MS)
@@ -395,6 +406,17 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
             // While a stream plays, on screen or minimised, access is asked again at least once
             // a minute: a lock or an unlink then stops it within the minute, even if the notice
             // was missed. See [askWhilePlaying].
+            // This app is older than the server takes: the server closes behind the update page,
+            // and nothing of it goes on meanwhile, voice or a stream. Open again, what was held
+            // meanwhile is asked now, and what push owes this server is paid.
+            repo.scope.launch {
+                var wasClosed = false
+                repo.appNeed.map { it != null }.distinctUntilChanged().collect { closed ->
+                    if (closed) { voice.leave(); stop() }
+                    else if (wasClosed) { resync(); c.push.payOwed(repo.server.id) }
+                    wasClosed = closed
+                }
+            },
             repo.scope.launch {
                 // Playing, not merely chosen: a stream that has failed or ended asks nothing more.
                 val playing = combine(playingHandle, p.state) { handle, state -> handle.takeIf { state == WhepState.Connecting || state == WhepState.Playing } }
@@ -469,7 +491,8 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         if (pairState(listed, null) == PairState.TooOld) return fallBehind(listed)
         // Who is asking comes first: what else may be asked depends on the answer.
         readAccess(a)
-        if (api !== a || _outdated.value != null) return
+        // Nor is a server that takes no Matty this old asked what it would only refuse.
+        if (api !== a || _outdated.value != null || closed()) return
         coroutineScope {
             launch { refreshStreams() }
             launch { refreshAccounts(); accountsJob?.join() }
@@ -481,9 +504,13 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
      * check while a stream plays.
      */
     private suspend fun readAccess(a: VillaNetApi) {
+        val needs = repo?.appNeeds
+        val ticket = needs?.asking()
         try {
             val now = a.access()
             if (api !== a) return
+            // The oldest Matty it takes, said to everybody (from 4.4.0; none before).
+            if (needs != null && ticket != null) needs.answered(ticket, now.app?.minimum, VILLANET_ID)
             val pair = pairState(listedVersion(), now.contract)
             if (pair == PairState.TooOld) return fallBehind(now.version.ifEmpty { listedVersion() })
             _outdated.value = null
@@ -520,6 +547,8 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
             name = now.name.ifBlank { before?.name.orEmpty() },
             release = now.release ?: before?.release,
             app = now.app ?: before?.app,
+            // An answer that says which plugin it is says whether a newer one is out; a link's doesn't.
+            update = if (now.version.isEmpty()) before?.update else now.update,
         )
         _access.value = next
         // A VillaNET from before banners (an admin rolled the plugin back) is asked nothing of them.
@@ -641,6 +670,30 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         appRefusal.heard(refused) { apply -> r.scope.launch { if (api === a) apply() } }
     }
 
+    /**
+     * A request of [a]'s was refused for this app being older than the server takes, with the
+     * server's [sentence]: the server closes behind the update page (see [ChatRepository.appNeeds]).
+     */
+    private fun outdatedHeard(a: VillaNetApi, sentence: String?) {
+        val r = repo ?: return
+        r.scope.launch { if (api === a) r.appNeeds.refused(sentence, VILLANET_ID) }
+    }
+
+    /**
+     * The update page's own read of `GET /access` for [r] (as it appears, when Matty comes back to
+     * the front, and Check again): its answer says whether this version is taken now. These reads
+     * are at least [APP_CHECK_GAP_MS] apart. While the module is not attached to [r], the server's
+     * plugin list is read again instead: the module attaches when it lists the plugin and reads
+     * `/access` then, and a list without the plugin opens the server.
+     */
+    suspend fun checkAppVersion(r: ChatRepository) {
+        delay(appCheckPace.claim())
+        val a = api
+        if (a == null || repo !== r) r.refreshPlugins() else readAccess(a)
+    }
+
+    private val appCheckPace = ReadPace(APP_CHECK_GAP_MS, android.os.SystemClock::elapsedRealtime)
+
     /** Whether a proof is on its way for this server. */
     @Composable
     internal fun proving(): Boolean = underWay.run.collectAsState().value != null
@@ -674,6 +727,12 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         )
     }
 
+    /**
+     * Whether the server is closed to this version of the app (see [ChatRepository.appNeed]):
+     * nothing its plugin would refuse is asked meanwhile.
+     */
+    private fun closed(): Boolean = repo?.appNeed?.value != null
+
     private fun fallBehind(version: String) {
         stop()
         forget()
@@ -687,6 +746,8 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     fun refreshAccounts() {
         val r = repo ?: return
         val a = api ?: return
+        // Not while the server is closed to this version: the round that opens it reads them.
+        if (closed()) return
         if (_access.value?.canWatch != true) { accountsJob?.cancel(); showAccounts(null, null); return }
         // The newest read wins: a burst of events (or a refresh racing one) is one answer.
         accountsJob?.cancel()
@@ -782,6 +843,17 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         }
     }
 
+    /**
+     * The Plugins screen opened: `/access` is read in a round of reads ([resync], paced as every
+     * round is), so that the update line says what the server says now. Whether Install can work
+     * changes with settings the plugin sends no event about. The end of an install made before
+     * (installed, or why it failed) is no longer said: it answered the tap that got it.
+     */
+    override fun onPluginsShown() {
+        installer?.installer?.forgetEnd()
+        resync()
+    }
+
     override fun onForeground(foreground: Boolean) {
         // Minimised, a stream plays on for its sound: its picture, which nobody can see, is no
         // longer decoded after a moment, and is back when Matty is.
@@ -790,10 +862,10 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
             heldPush?.let { p -> heldPush = null; decode(p.payload, p.tag, p.place) }
             voice.foreground()
             if (accountsStale) refreshAccounts()
-            shelf?.lookedAt()
+            if (!closed()) shelf?.lookedAt()
             // The boards changed while nobody was looking, and there is a copy to bring up to
             // date; a copy that is merely old waits for somebody to open a board or a profile.
-            if (_outdated.value == null) boardShelf?.cameBack()
+            if (_outdated.value == null && !closed()) boardShelf?.cameBack()
             resyncIfBehind()
         }
         // Minimised (or the screen off) with a stream on: it keeps playing, held up by
@@ -815,15 +887,15 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     /**
      * A profile or the panel has opened: the boards are asked about again if the copy is a minute
      * old or was never read. Nothing while the server's VillaNET is too old for this app, which
-     * is never asked anything.
+     * is never asked anything, nor while the server is closed to this version.
      */
-    fun boardsLookedAt() { if (_outdated.value == null) boardShelf?.lookedAt() }
+    fun boardsLookedAt() { if (_outdated.value == null && !closed()) boardShelf?.lookedAt() }
 
     /**
      * A profile is open: [boardsLookedAt], and while it stays open with nothing to show because
      * that read failed, asked again now and then. Returns only when cancelled (the profile closing).
      */
-    suspend fun boardsProfileOpen() { boardShelf?.profileOpen { _outdated.value == null } }
+    suspend fun boardsProfileOpen() { boardShelf?.profileOpen { _outdated.value == null && !closed() } }
 
     /** The Boards tab is on screen, or has left it: while it is, the boards are read each minute. */
     fun boardsShown(on: Boolean) { boardShelf?.shown(on) }
@@ -1095,6 +1167,47 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
         return theirs?.let { outOfStepWords(it) }
     }
 
+    @Composable
+    override fun update(): ceo.villa.matty.plugins.PluginUpdate? {
+        val a by access.collectAsState()
+        val r = repo ?: return null
+        val self by r.me.collectAsState()
+        val inst = installer?.takeIf { it.repo === r }
+        val step by (inst?.installer?.state ?: noInstall).collectAsState()
+        val offer = pluginUpdateOf(a?.update, a?.version.orEmpty(), self?.isSystemAdmin == true)
+        return updateLineOf(offer, step, a?.version.orEmpty(), r.siteName, inst?.let { i -> { o: UpdateOffer -> i.installer.start(o) } })
+    }
+
+    /**
+     * A system admin's install of a newer release, for this server ([repo]): kept while the
+     * plugin restarts under it (which detaches this module and attaches it again), and made anew
+     * for another server.
+     */
+    private class ServerInstall(val repo: ChatRepository, val installer: PluginInstaller)
+    private var installer: ServerInstall? = null
+    private val noInstall = MutableStateFlow<InstallState>(InstallState.Idle)
+
+    private fun installPort(r: ChatRepository) = object : InstallPort {
+        override val dir = pluginUpdateDir(c.app.cacheDir)
+        override val server get() = r.siteName
+        // As when the server closes: the app's own voice session there ends first.
+        override fun leaveVoice() { if (repo === r) voice.leave() }
+        override suspend fun fetchBundle(read: (java.io.InputStream, Long, String?) -> Unit) {
+            val a = api?.takeIf { repo === r } ?: throw java.io.IOException("Not attached")
+            a.updateBundle(read)
+        }
+        override suspend fun upload(file: java.io.File, name: String) = r.client.uploadPlugin(file, name)
+        override suspend fun runningVersion(): String? {
+            // Read as every read of `/access` is, so the line follows it; nothing while the plugin
+            // is away (restarting), and nothing of another server.
+            val a = api?.takeIf { repo === r } ?: return null
+            readAccess(a)
+            return _access.value?.version?.takeIf { api === a }
+        }
+        override suspend fun pause(ms: Long) = delay(ms)
+        override fun now() = android.os.SystemClock.elapsedRealtime()
+    }
+
     /** People live right now, as the Live now list counts them: no 24/7 channels, nothing paused. */
     @Composable
     override fun panelBadge(): Int {
@@ -1120,11 +1233,14 @@ class VillaNetPlugin(private val c: AppContainer) : MattyPlugin {
     override fun ProfileExtras(userId: String, host: PluginHost) = VillaNetProfileExtras(this, userId, host)
 
     @Composable
-    override fun ProfileBanner(userId: String, host: PluginHost, modifier: androidx.compose.ui.Modifier) =
-        VillaNetProfileBanner(this, userId, host, modifier)
+    override fun ProfileBanner(userId: String, host: PluginHost, modifier: androidx.compose.ui.Modifier, inView: Boolean) =
+        VillaNetProfileBanner(this, userId, host, modifier, inView)
 
     @Composable
     override fun ProfileOver(userId: String, host: PluginHost) = VillaNetProfileOver(this, userId, host)
+
+    @Composable
+    override fun ProfileBannerNote(userId: String, host: PluginHost) = VillaNetProfileBannerNote(this, userId)
 
     @Composable
     override fun Overlay(host: PluginHost) {

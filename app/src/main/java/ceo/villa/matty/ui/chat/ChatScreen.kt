@@ -157,29 +157,7 @@ fun ChatScreen(
     // quote is on its way into it; and it's back whenever the chat comes into view again.
     ScrollAwayEffects(scrollAway, listState, keep = !inView || editing != null || typingHere("${ch.id}|") ||
         ceo.villa.matty.ui.ShareInbox.target == ch.id)
-    // Follow the conversation: stick to the newest message when already near it, or when it's ours.
-    // "Near it" is judged when the list comes to rest, not mid-glide: several messages landing at
-    // once each start the glide again, and measured then it could look scrolled away and be left
-    // stranded a few messages up.
-    var following by remember(ch.id) { mutableStateOf(true) }
-    // Per conversation, like the flag it sets and the list it watches.
-    LaunchedEffect(listState, ch.id) {
-        androidx.compose.runtime.snapshotFlow { listState.isScrollInProgress }.collect { moving ->
-            if (!moving) following = listState.firstVisibleItemIndex <= 2
-        }
-    }
-    // The reader's own drag or flick ends "following" at once (the list's own glide to a new
-    // message doesn't): a message landing mid-flick must not cancel the flick and pull the list
-    // back down. Where it comes to rest decides again.
-    LaunchedEffect(listState, ch.id) {
-        listState.interactionSource.interactions.collect {
-            if (it is androidx.compose.foundation.interaction.DragInteraction.Start) following = false
-        }
-    }
-    val newest = rows.firstOrNull()?.post
-    LaunchedEffect(newest?.id) {
-        if (newest != null && (following || listState.firstVisibleItemIndex <= 2 || newest.userId == repo.myId)) listState.animateScrollToItem(0)
-    }
+    FollowNewest(listState, ch.id, rows.firstOrNull()?.post, repo.myId)
     val headerPad = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() } + 68.dp
     // The message pill floats over the conversation; the list keeps clear of it at rest and
     // scrolls on behind it.
@@ -329,6 +307,45 @@ internal fun ScrollAwayEffects(away: ScrollAway, state: LazyListState, keep: Boo
     val atNewest by remember(state) { derivedStateOf { state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0 } }
     LaunchedEffect(away, atNewest) { if (atNewest) away.show() }
 }
+
+/**
+ * Follow the conversation: stick to the newest message when already near it, or when it's ours.
+ * A chat and a thread both keep their list this way, newest first (index 0 at the bottom). [key]
+ * is the conversation: the flag and the effects are its own, like the list they watch.
+ * "Near it" is judged when the list comes to rest, not mid-glide: several messages landing at
+ * once each start the glide again, and measured then it could look scrolled away and be left
+ * stranded a few messages up.
+ */
+@Composable
+internal fun FollowNewest(state: LazyListState, key: Any?, newest: Post?, myId: String) {
+    var following by remember(key) { mutableStateOf(true) }
+    LaunchedEffect(state, key) {
+        androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }.collect { moving ->
+            if (!moving) following = state.firstVisibleItemIndex <= NEAR_NEWEST
+        }
+    }
+    // The reader's own drag or flick ends "following" at once (the list's own glide to a new
+    // message doesn't): a message landing mid-flick must not cancel the flick and pull the list
+    // back down. Where it comes to rest decides again.
+    LaunchedEffect(state, key) {
+        state.interactionSource.interactions.collect {
+            if (it is androidx.compose.foundation.interaction.DragInteraction.Start) following = false
+        }
+    }
+    LaunchedEffect(newest?.id) {
+        if (newest != null && followsNewest(following, state.firstVisibleItemIndex, newest.userId == myId)) state.animateScrollToItem(0)
+    }
+}
+
+/** How many messages up from the newest still count as being at it. */
+internal const val NEAR_NEWEST = 2
+
+/**
+ * Whether a new newest message brings the list down to it: always when it's [mine] (just sent),
+ * and otherwise while the list is [following] or within [NEAR_NEWEST] of the bottom.
+ */
+internal fun followsNewest(following: Boolean, firstVisible: Int, mine: Boolean): Boolean =
+    mine || following || firstVisible <= NEAR_NEWEST
 
 /**
  * Typing in (or about to type into) the box keyed [draftKey]: the keyboard or the emoji popup is

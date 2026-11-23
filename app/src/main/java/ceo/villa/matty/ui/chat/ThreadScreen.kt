@@ -76,7 +76,7 @@ fun ThreadScreen(nav: Navigator, rootId: String) {
     val root = posts[rootId]
     val ids = orders[rootId]
     val rows = remember(ids, posts, sendStates) {
-        val list = ids.orEmpty().mapNotNull { posts[it] }.filter { it.deleteAt == 0L }.sortedByDescending { it.createAt }
+        val list = threadNewestFirst(ids.orEmpty().mapNotNull { posts[it] }.filter { it.deleteAt == 0L }, sendStates)
         buildRows(list, 0, repo.myId, sendStates, inThread = true)
     }
     val ch = root?.let { repo.channels.value[it.channelId] }
@@ -102,6 +102,8 @@ fun ThreadScreen(nav: Navigator, rootId: String) {
             // As in the channel: reading back up the thread slides the reply pill away.
             val scrollAway = rememberScrollAway(rootId)
             val threadList = rememberLazyListState()
+            // As in the channel: the thread follows its newest reply, yours always.
+            FollowNewest(threadList, rootId, rows.firstOrNull()?.post, repo.myId)
             ScrollAwayEffects(scrollAway, threadList, keep = editing != null || typingHere("${root?.channelId}|$rootId") ||
                 ceo.villa.matty.ui.ShareInbox.target == "thread:$rootId")
             ceo.villa.matty.ui.ReportBottomChrome("thread:$rootId", if (root != null && !scrollAway.hidden) dock else null)
@@ -136,6 +138,18 @@ fun ThreadScreen(nav: Navigator, rootId: String) {
     sheetFor?.let { p -> MessageActionsSheet(nav, p, { sheetFor = null }, { reactTo = p }, { editing = p.id to p.message }, inThread = true) }
     whoFor?.let { (p, e) -> ReactionsWhoSheet(p, e) { whoFor = null } }
 }
+
+/**
+ * A thread's [replies], newest first, as its list shows them. Your own replies still being sent
+ * ([sending] says [SendState.Sending][ceo.villa.matty.data.repo.SendState.Sending]) come first,
+ * so the list follows them there even when a reply from somebody else carries a later time of the
+ * server's. One that failed sorts by its own time, which is never behind what the phone held of
+ * the channel when it was written ([ceo.villa.matty.data.repo.pendingCreateAt]): it keeps its
+ * place below the replies it came after, and newer ones pass it, as in the channel, once their
+ * time is later than its stamp (on a phone whose clock is ahead, that takes as long as it is ahead).
+ */
+internal fun threadNewestFirst(replies: List<Post>, sending: Map<String, ceo.villa.matty.data.repo.SendState>): List<Post> =
+    replies.sortedWith(compareByDescending<Post> { sending[it.id] == ceo.villa.matty.data.repo.SendState.Sending }.thenByDescending { it.createAt })
 
 /** Search across the current team, with jump-to-message. */
 @Composable

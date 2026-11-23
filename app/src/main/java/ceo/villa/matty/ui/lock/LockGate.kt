@@ -12,14 +12,18 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -85,7 +89,6 @@ object AppLock {
 @Composable
 fun ServerGate(activity: MainActivity, repo: ChatRepository, content: @Composable () -> Unit) {
     val ctx = LocalContext.current
-    val container = ctx.container
     val id = repo.server.id
     val policy by repo.policy.collectAsState()
     // Asked of every server, so one that starts asking mid-session is locked at once.
@@ -120,20 +123,6 @@ fun ServerGate(activity: MainActivity, repo: ChatRepository, content: @Composabl
         content()
         return
     }
-    val pending by activity.pendingIntent
-    LaunchedEffect(pending) {
-        val intent = pending ?: return@LaunchedEffect
-        // Left behind another server's lock: it is that server's, not this one's to act on.
-        if (AppLock.waiting.waitsElsewhere(intent, id)) return@LaunchedEffect
-        val own = !IntentKey.ignored(intent.action, intent.getStringExtra(MainActivity.EXTRA_KEY), container.intentKey) &&
-            intent.action == MainActivity.ACTION_OPEN_CHANNEL
-        val signedIn = container.sessionStore.servers.value.mapTo(HashSet()) { it.id }
-        when (val next = whileLocked(own, intent.getStringExtra(MainActivity.EXTRA_SERVER_ID), id, signedIn)) {
-            // The intent stays pending: the other server's session opens it.
-            is WhileLocked.Switch -> container.sessions.switchTo(next.serverId)
-            WhileLocked.Waits -> {}
-        }
-    }
     var prompt by remember { mutableStateOf<CancellationSignal?>(null) }
     DisposableEffect(Unit) { onDispose { prompt?.cancel() } }
     val name = repo.server.name
@@ -155,13 +144,47 @@ fun ServerGate(activity: MainActivity, repo: ChatRepository, content: @Composabl
         autoPrompted = true
         ask()
     }
+    ClosedServer(activity, repo) { canSwitch, onSwitch, onSignOut ->
+        LockScreen(name, secured, canSwitch = canSwitch, onUnlock = { ask() }, onSettings = {
+            runCatching { ctx.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }, onSwitch = onSwitch, onSignOut = onSignOut)
+    }
+}
+
+/**
+ * A server closed behind a page of its own (its lock, or the update page), with the ways off it
+ * other than that page's own: [page] is drawn with whether there is another signed-in server to
+ * switch to and the two exits, to it and signing out of this one. Nothing pending reaches the
+ * server's content meanwhile (see [whileLocked]): it waits for the page to go, or a notification
+ * of another server switches to that server.
+ */
+@Composable
+internal fun ClosedServer(
+    activity: MainActivity, repo: ChatRepository,
+    page: @Composable (canSwitch: Boolean, onSwitch: () -> Unit, onSignOut: () -> Unit) -> Unit,
+) {
+    val container = LocalContext.current.container
+    val id = repo.server.id
+    val name = repo.server.name
+    val pending by activity.pendingIntent
+    LaunchedEffect(pending) {
+        val intent = pending ?: return@LaunchedEffect
+        // Left behind another server's lock: it is that server's, not this one's to act on.
+        if (AppLock.waiting.waitsElsewhere(intent, id)) return@LaunchedEffect
+        val own = !IntentKey.ignored(intent.action, intent.getStringExtra(MainActivity.EXTRA_KEY), container.intentKey) &&
+            intent.action == MainActivity.ACTION_OPEN_CHANNEL
+        val signedIn = container.sessionStore.servers.value.mapTo(HashSet()) { it.id }
+        when (val next = whileLocked(own, intent.getStringExtra(MainActivity.EXTRA_SERVER_ID), id, signedIn)) {
+            // The intent stays pending: the other server's session opens it.
+            is WhileLocked.Switch -> container.sessions.switchTo(next.serverId)
+            WhileLocked.Waits -> {}
+        }
+    }
     val servers by container.sessionStore.servers.collectAsState()
     val exits = lockExits(id, servers.map { it.id })
     var choosing by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
-    LockScreen(name, secured, canSwitch = exits.switchTo.isNotEmpty(), onUnlock = { ask() }, onSettings = {
-        runCatching { ctx.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-    }, onSwitch = { choosing = true }, onSignOut = { confirmSignOut = true })
+    page(exits.switchTo.isNotEmpty(), { choosing = true }, { confirmSignOut = true })
     if (choosing) {
         val others = exits.switchTo.mapNotNull { other -> servers.firstOrNull { it.id == other } }
         SwitchServerSheet(others, onDismiss = { choosing = false }) { target ->
@@ -235,11 +258,7 @@ private fun LockScreen(
     onUnlock: () -> Unit, onSettings: () -> Unit, onSwitch: () -> Unit, onSignOut: () -> Unit,
 ) {
     val c = Matty.colors
-    Column(
-        Modifier.fillMaxSize().background(c.background).padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
+    ClosedPage {
         Box(Modifier.size(112.dp).background(c.pill, CircleShape), contentAlignment = Alignment.Center) {
             Image(painterResource(R.drawable.ic_launcher_foreground), null, Modifier.size(112.dp), colorFilter = ColorFilter.tint(c.icon))
         }
@@ -265,9 +284,26 @@ private fun LockScreen(
     }
 }
 
+/**
+ * The page of a server that is closed (the lock screen, the update page): its [content] centred
+ * on the screen, and scrolled when it is taller than the screen (a phone on its side, a large
+ * font), so that the ways off it can always be reached.
+ */
+@Composable
+internal fun ClosedPage(content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Matty.colors.background)) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            content = content,
+        )
+    }
+}
+
 /** A small text action, as the sign-in screen's "Use an access token". */
 @Composable
-private fun QuietLink(text: String, onClick: () -> Unit) {
+internal fun QuietLink(text: String, onClick: () -> Unit) {
     Text(
         text, color = Matty.colors.textSecondary, style = MaterialTheme.typography.labelLarge,
         modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(10.dp),

@@ -23,6 +23,8 @@ import ceo.villa.matty.data.runCatchingCancellable
 import ceo.villa.matty.data.api.str
 import ceo.villa.matty.data.session.AppSettings
 import ceo.villa.matty.data.session.SavedServer
+import ceo.villa.matty.data.session.AppNeed
+import ceo.villa.matty.data.session.AppNeedKeeper
 import ceo.villa.matty.data.session.PolicyKeeper
 import ceo.villa.matty.data.session.ServerPolicy
 import ceo.villa.matty.data.session.TwoFactor
@@ -82,6 +84,8 @@ class ChatRepository(
     private val nameColorStore: NameColorStore? = null,
     /** Keeps what the server now requires (see [policy]) with its saved session. */
     rememberPolicy: (ServerPolicy) -> Unit = {},
+    /** Keeps what newer Matty the server now requires (see [appNeed]) with its saved session. */
+    rememberAppNeed: (AppNeed?) -> Unit = {},
     /**
      * Whether this server would be locked if it asked for the unlock (ui.lock.Unlocks): read when
      * it does ask, as the lock may come up after the moment it matters (see [readingChannel]).
@@ -98,6 +102,14 @@ class ChatRepository(
      * until its config has been read again, then from the server itself. Decided before [ready].
      */
     val policy: StateFlow<ServerPolicy> = policyKeeper.policy
+
+    /**
+     * A newer Matty that this server requires, heard from its Matty Plugin and kept with the saved
+     * session; the module that hears it tells [appNeeds]. While [appNeed] is not null the server is
+     * closed behind the update page (ui.lock.UpdateGate).
+     */
+    val appNeeds = AppNeedKeeper(server.appNeed, ceo.villa.matty.BuildConfig.VERSION_NAME, rememberAppNeed)
+    val appNeed: StateFlow<AppNeed?> = appNeeds.need
     val teams = MutableStateFlow<List<Team>>(emptyList())
     val teamUnreads = MutableStateFlow<Map<String, TeamUnread>>(emptyMap())
     /** null means the Home (direct messages) space is selected. */
@@ -361,14 +373,18 @@ class ChatRepository(
      * stream that is playing). Only the latest read asked for counts: two events a moment apart
      * mustn't leave the older answer standing.
      */
-    private fun refreshPlugins() {
+    fun refreshPlugins() {
         val mine = ++pluginReads
         scope.launch {
             for (wait in listOf(0L, 2_000L, 10_000L, 60_000L)) {
                 delay(wait)
                 if (mine != pluginReads) return@launch
                 val list = runCatchingCancellable { client.webappPlugins() }.getOrNull() ?: continue
-                if (mine == pluginReads) webappPlugins.value = list
+                if (mine == pluginReads) {
+                    webappPlugins.value = list
+                    // A plugin no longer running requires nothing of the app.
+                    appNeeds.listed(list.mapTo(HashSet()) { it.id })
+                }
                 return@launch
             }
         }
@@ -953,8 +969,10 @@ class ChatRepository(
         }
         val now = System.currentTimeMillis()
         val pendingId = "$myId:$now"
+        // Never behind what the phone holds of the channel, whatever its clock says (see pendingCreateAt).
+        val at = pendingCreateAt(now, posts.value.values.filter { it.channelId == channelId }.maxOfOrNull { it.createAt })
         val pending = Post(
-            id = pendingId, createAt = now, updateAt = now, userId = myId, channelId = channelId,
+            id = pendingId, createAt = at, updateAt = at, userId = myId, channelId = channelId,
             rootId = rootId, message = trimmed, pendingPostId = pendingId, fileIds = fileIds,
             props = props ?: JsonObject(emptyMap()),
         )
@@ -1517,3 +1535,12 @@ internal fun sinceAdditions(order: List<String>, hasMoreOlder: Boolean, known: M
     val have = order.toHashSet()
     return answer.filter { (!collapsed || it.rootId.isEmpty()) && it.deleteAt == 0L && it.createAt >= floor && it.id !in have }.map { it.id }
 }
+
+/**
+ * The time a message being sent is stamped with: the phone's [clock], or one millisecond after
+ * [newestHeld] (the newest post the phone holds of that channel) when that is not earlier, so the
+ * message never sits behind what was there when it was written, even on a phone whose clock is
+ * behind the server's.
+ */
+internal fun pendingCreateAt(clock: Long, newestHeld: Long?): Long =
+    if (newestHeld == null || newestHeld < clock) clock else newestHeld + 1
