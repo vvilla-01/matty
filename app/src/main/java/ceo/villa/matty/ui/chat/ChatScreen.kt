@@ -85,6 +85,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -314,10 +317,14 @@ internal fun ScrollAwayEffects(away: ScrollAway, state: LazyListState, keep: Boo
  * is the conversation: the flag and the effects are its own, like the list they watch.
  * "Near it" is judged when the list comes to rest, not mid-glide: several messages landing at
  * once each start the glide again, and measured then it could look scrolled away and be left
- * stranded a few messages up.
+ * stranded a few messages up. [onDecided] hears of each new newest message and whether the list
+ * follows it, before the list moves.
  */
 @Composable
-internal fun FollowNewest(state: LazyListState, key: Any?, newest: Post?, myId: String) {
+internal fun FollowNewest(
+    state: LazyListState, key: Any?, newest: Post?, myId: String,
+    onDecided: (newest: Post, followed: Boolean) -> Unit = { _, _ -> },
+) {
     var following by remember(key) { mutableStateOf(true) }
     LaunchedEffect(state, key) {
         androidx.compose.runtime.snapshotFlow { state.isScrollInProgress }.collect { moving ->
@@ -333,7 +340,10 @@ internal fun FollowNewest(state: LazyListState, key: Any?, newest: Post?, myId: 
         }
     }
     LaunchedEffect(newest?.id) {
-        if (newest != null && followsNewest(following, state.firstVisibleItemIndex, newest.userId == myId)) state.animateScrollToItem(0)
+        if (newest == null) return@LaunchedEffect
+        val follows = followsNewest(following, state.firstVisibleItemIndex, newest.userId == myId)
+        onDecided(newest, follows)
+        if (follows) state.animateScrollToItem(0)
     }
 }
 
@@ -416,18 +426,38 @@ private fun JumpToPresent(state: LazyListState, inView: Boolean, dock: androidx.
         rise.animateTo(if (inView) 1f else 0f, androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow))
     }
     val density = LocalDensity.current
+    NewestPill(
+        show, "Jump to present",
+        modifier.graphicsLayer { translationY = (1f - rise.value) * with(density) { dock.toPx() }; alpha = rise.value },
+        enabled = inView,
+    ) { scope.launch { state.glideToPresent() } }
+}
+
+/**
+ * The look of a pill back to the newest message, as the channel's "Jump to present" and a thread's
+ * new replies both have it: [words] and a down arrow, fading and scaling in while [show] holds.
+ * [actionLabel] and [role] are what a screen reader names its tap and calls it; with [announce] it
+ * is a polite live region, spoken when it shows and when its words change.
+ */
+@Composable
+internal fun NewestPill(
+    show: Boolean, words: String, modifier: Modifier, enabled: Boolean = true,
+    actionLabel: String? = null, role: androidx.compose.ui.semantics.Role? = null, announce: Boolean = false,
+    onClick: () -> Unit,
+) {
     AnimatedVisibility(
         show,
-        modifier = modifier.graphicsLayer { translationY = (1f - rise.value) * with(density) { dock.toPx() }; alpha = rise.value },
+        modifier = modifier,
         enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut(),
     ) {
         Row(
             Modifier.clip(RoundedCornerShape(20.dp)).background(Matty.colors.selected)
-                .clickable(enabled = inView) { scope.launch { state.glideToPresent() } }
+                .then(if (announce) Modifier.semantics { liveRegion = LiveRegionMode.Polite } else Modifier)
+                .clickable(enabled = enabled, onClickLabel = actionLabel, role = role, onClick = onClick)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Jump to present", color = Matty.colors.title, style = MaterialTheme.typography.labelLarge)
+            Text(words, color = Matty.colors.title, style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.width(6.dp))
             Icon(Icons.Outlined.KeyboardArrowDown, null, tint = Matty.colors.title, modifier = Modifier.size(18.dp))
         }

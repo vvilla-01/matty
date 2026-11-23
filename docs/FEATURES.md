@@ -51,7 +51,9 @@ ready).
 - Threads (collapsed reply threads) with participant faces, follow/unfollow, and inline reply
   quotes when threads are off. A thread follows its newest reply as a chat does: after you send
   one it goes to it, and somebody else's is followed while you are at the newest end, not while
-  you have scrolled away
+  you have scrolled away. Scrolled away, a pill above the reply box counts the replies by others
+  that arrived below what you have seen ("2 new replies"), counts down as they come into view, and
+  glides to the newest reply when tapped
 - Typing indicators, edit, delete, pin, save, mark unread, quote, copy link. An edit the server
   refuses (a message older than its edit window, say) stays in the box with the reason shown, and
   Edit is greyed, with why, once a message is past that window

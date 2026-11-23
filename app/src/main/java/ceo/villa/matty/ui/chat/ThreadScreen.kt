@@ -1,5 +1,8 @@
 package ceo.villa.matty.ui.chat
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -7,10 +10,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,6 +53,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import ceo.villa.matty.container
 import ceo.villa.matty.data.api.Post
@@ -102,8 +110,12 @@ fun ThreadScreen(nav: Navigator, rootId: String) {
             // As in the channel: reading back up the thread slides the reply pill away.
             val scrollAway = rememberScrollAway(rootId)
             val threadList = rememberLazyListState()
+            // The replies by others that arrived below what you have had on screen, for the pill.
+            val newReplies = rememberNewReplies(rootId, threadList, rows, repo.myId)
             // As in the channel: the thread follows its newest reply, yours always.
-            FollowNewest(threadList, rootId, rows.firstOrNull()?.post, repo.myId)
+            FollowNewest(threadList, rootId, rows.firstOrNull()?.post, repo.myId) { newest, followed ->
+                newReplies.decided(newest, followed, threadList.firstVisibleKey() as? String)
+            }
             ScrollAwayEffects(scrollAway, threadList, keep = editing != null || typingHere("${root?.channelId}|$rootId") ||
                 ceo.villa.matty.ui.ShareInbox.target == "thread:$rootId")
             ceo.villa.matty.ui.ReportBottomChrome("thread:$rootId", if (root != null && !scrollAway.hidden) dock else null)
@@ -124,6 +136,15 @@ fun ThreadScreen(nav: Navigator, rootId: String) {
                     active = nav.top == Route.Thread(rootId),
                     reveal = if (scrollAway.hidden) ({ scrollAway.show() }) else null)
             }
+            // Over the dock, as the channel's pill is; it follows the reply pill down when that
+            // slides away, resting just above the navigation bar.
+            val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val drop by animateDpAsState(
+                if (scrollAway.hidden) (dock - navBottom).coerceAtLeast(0.dp) else 0.dp,
+                spring(stiffness = Spring.StiffnessMediumLow), label = "newRepliesDrop",
+            )
+            if (ids != null && !(failed && root == null)) NewRepliesPill(newReplies, threadList,
+                Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = dock + 8.dp + bar).offset { IntOffset(0, drop.roundToPx()) })
         }
     }
     val ctx = LocalContext.current

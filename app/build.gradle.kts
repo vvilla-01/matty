@@ -19,8 +19,8 @@ android {
         applicationId = "ceo.villa.matty"
         minSdk = 37          // Android 17 only, like MarkOut
         targetSdk = 37
-        versionCode = 33
-        versionName = "0.1.32"
+        versionCode = 34
+        versionName = "0.1.33"
         // Phones are arm64; x86_64 keeps emulators working. libwebrtc is per-ABI, so
         // nothing else is packaged.
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
